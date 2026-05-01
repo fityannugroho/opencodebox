@@ -1,0 +1,55 @@
+#!/bin/bash
+# opencode-sandbox
+# Run OpenCode inside bubblewrap sandbox
+
+PROJECT_DIR="$PWD"
+
+# 1. Application Data (history, session, auth) - Persist read-write
+APP_DATA="$HOME/.local/share/opencode"
+
+# 2. Config (settings, preferences) - Persist read-write
+CONFIG_DIR="$HOME/.config/opencode"
+
+# 3. Skills Directory (~/.agents) - Persist read-write
+AGENTS_DIR="$HOME/.agents"
+
+# 4. Find path opencode
+OPCODE_PATH=$(which opencode)
+OPCODE_DIR=$(dirname "$OPCODE_PATH")
+
+exec bwrap \
+    --unshare-pid \
+    --unshare-ipc \
+    --unshare-uts \
+    --die-with-parent \
+    --dev /dev \
+    --proc /proc \
+    --tmpfs /tmp \
+    --ro-bind /usr /usr \
+    --symlink usr/lib64 /lib64 \
+    --symlink usr/bin /bin \
+    --symlink usr/lib /lib \
+    --hostname opencode-sandbox \
+    --ro-bind /etc/ssl /etc/ssl \
+    --ro-bind /etc/ca-certificates /etc/ca-certificates \
+    --ro-bind "$HOME/.local" "$HOME/.local" \
+    --tmpfs "$HOME/.local/share/keyrings" \
+    --ro-bind "$HOME/.cache" "$HOME/.cache" \
+    --ro-bind "$HOME/.bun" "$HOME/.bun" \
+    --ro-bind "$HOME/.npm" "$HOME/.npm" \
+    --ro-bind "$HOME/.rustup" "$HOME/.rustup" \
+    --ro-bind "$HOME/.cargo/bin" "$HOME/.cargo/bin" \
+    --ro-bind "$HOME/.cargo/registry" "$HOME/.cargo/registry" \
+    --ro-bind "$HOME/.config/mise" "$HOME/.config/mise" \
+    --ro-bind "$HOME/.config/pnpm" "$HOME/.config/pnpm" \
+    --ro-bind "$HOME/.config/uv" "$HOME/.config/uv" \
+    --ro-bind "$HOME/.gitconfig" "$HOME/.gitconfig" \
+    --ro-bind "$CONFIG_DIR" "$CONFIG_DIR" \
+    --ro-bind "$AGENTS_DIR" "$AGENTS_DIR" \
+    --bind "$SSH_AUTH_SOCK" "$SSH_AUTH_SOCK" \
+    --bind "$PROJECT_DIR" "$PROJECT_DIR" \
+    --bind "$APP_DATA" "$APP_DATA" \
+    --bind "$OPCODE_DIR" /opt/opencode \
+    --setenv PATH "/usr/bin:/bin:/opt/opencode:$HOME/.local/bin" \
+    -- \
+    bash -c 'eval "$(mise activate bash)"; exec /opt/opencode/opencode "$@"' bash "$@"
