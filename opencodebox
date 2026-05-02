@@ -185,9 +185,6 @@ declare -a BWRAP_ARGS=(
     --ro-bind "$HOME/.config/uv" "$HOME/.config/uv"
     --ro-bind "$HOME/.gitconfig" "$HOME/.gitconfig"
 
-    # --- SSH Agent Access ---
-    --ro-bind "$SSH_AUTH_SOCK" "$SSH_AUTH_SOCK"
-
     # --- OpenCode Specific (read-only) ---
     --ro-bind "$CONFIG_DIR" "$CONFIG_DIR"
     --ro-bind "$AGENTS_DIR" "$AGENTS_DIR"

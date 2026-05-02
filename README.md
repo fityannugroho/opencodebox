@@ -16,6 +16,8 @@ Run OpenCode inside a bubblewrap sandbox for security isolation.
 - [**bubblewrap** (`bwrap`)](https://github.com/containers/bubblewrap) - for sandboxing
 - [**opencode**](https://opencode.ai) - AI coding assistant
 
+> **Security Note (CVE-2017-5226):** Bubblewrap sandbox can be escaped via `TIOCSTI` ioctl if the kernel allows it. Since Linux 6.2, `TIOCSTI` is restricted when `dev.tty.legacy_tiocsti=0` (default). On older kernels, ensure bubblewrap >= 0.1.5 (uses `setsid()` fix) or enable seccomp filtering. The `install.sh` script performs this check automatically.
+
 ## Installation
 
 ```bash
