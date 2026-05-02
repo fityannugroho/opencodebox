@@ -1,4 +1,6 @@
 #!/bin/bash
+
+# ============================================================
 # opencode-sandbox
 # Run OpenCode inside bubblewrap sandbox
 #
@@ -15,6 +17,7 @@
 #   opencodebox --with /mnt/data:/workspace/data
 #   opencodebox --with-ro /etc/hosts
 #   opencodebox --with /data --with-ro /config --version
+# ============================================================
 
 # Prerequisite checks - fail fast with helpful messages
 check_prerequisites() {
