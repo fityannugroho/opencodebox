@@ -19,6 +19,26 @@ chmod +x "$INSTALL_PATH"
 
 echo "opencodebox installed to $INSTALL_PATH"
 
+echo ""
+echo "Security check for CVE-2017-5226 (TIOCSTI sandbox escape):"
+
+if sysctl -n dev.tty.legacy_tiocsti >/dev/null 2>&1; then
+    LEGACY=$(sysctl -n dev.tty.legacy_tiocsti 2>/dev/null || echo "1")
+    if [[ "$LEGACY" == "0" ]]; then
+        echo "  [OK] Kernel >= 6.2 with TIOCSTI disabled (protected)"
+    else
+        echo "  [WARN] Kernel >= 6.2 but legacy_tiocsti=1 (TIOCSTI allowed)"
+        echo "    Disable it with: echo 'dev.tty.legacy_tiocsti=0' | sudo tee /etc/sysctl.d/99-tiocsti.conf && sudo sysctl --system"
+    fi
+else
+    echo "  [INFO] Kernel < 6.2 - ensure bubblewrap >= 0.1.5 with seccomp"
+fi
+
+if command -v bwrap >/dev/null 2>&1; then
+    BWRAP_VERSION=$(bwrap --version 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -1)
+    echo "  [INFO] bubblewrap version: $BWRAP_VERSION"
+fi
+
 # Check if install directory is in PATH
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     echo ""
