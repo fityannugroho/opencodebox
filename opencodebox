@@ -21,7 +21,7 @@ check_prerequisites() {
     local missing=0
 
     # Check for bwrap (bubblewrap)
-    if ! command -v bwrap &>/dev/null; then
+    if ! command -v bwrap >/dev/null 2>&1; then
         echo "Error: bubblewrap (bwrap) is not installed." >&2
         echo "" >&2
         echo "Install bubblewrap:" >&2
@@ -32,7 +32,7 @@ check_prerequisites() {
     fi
 
     # Check for opencode
-    if ! command -v opencode &>/dev/null; then
+    if ! command -v opencode >/dev/null 2>&1; then
         echo "Error: opencode is not installed or not in PATH." >&2
         echo "" >&2
         echo "Install opencode:" >&2
@@ -206,6 +206,6 @@ done
 # mise activation is optional - fails silently if not available
 exec bwrap "${BWRAP_ARGS[@]}" -- \
     bash -c '
-        command -v mise &>/dev/null && eval "$(mise activate bash)"
+        command -v mise >/dev/null 2>&1 && eval "$(mise activate bash)"
         exec /opt/opencode/opencode "$@"
     ' -- "$@"
