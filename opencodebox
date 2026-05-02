@@ -17,39 +17,71 @@ AGENTS_DIR="$HOME/.agents"
 OPCODE_PATH=$(which opencode)
 OPCODE_DIR=$(dirname "$OPCODE_PATH")
 
-exec bwrap \
-    --unshare-pid \
-    --unshare-ipc \
-    --unshare-uts \
-    --die-with-parent \
-    --dev /dev \
-    --proc /proc \
-    --tmpfs /tmp \
-    --ro-bind /usr /usr \
-    --symlink usr/lib64 /lib64 \
-    --symlink usr/bin /bin \
-    --symlink usr/lib /lib \
-    --hostname opencode-sandbox \
-    --ro-bind /etc/ssl /etc/ssl \
-    --ro-bind /etc/ca-certificates /etc/ca-certificates \
-    --ro-bind "$HOME/.local" "$HOME/.local" \
-    --tmpfs "$HOME/.local/share/keyrings" \
-    --ro-bind "$HOME/.cache" "$HOME/.cache" \
-    --ro-bind "$HOME/.bun" "$HOME/.bun" \
-    --ro-bind "$HOME/.npm" "$HOME/.npm" \
-    --ro-bind "$HOME/.rustup" "$HOME/.rustup" \
-    --ro-bind "$HOME/.cargo/bin" "$HOME/.cargo/bin" \
-    --ro-bind "$HOME/.cargo/registry" "$HOME/.cargo/registry" \
-    --ro-bind "$HOME/.config/mise" "$HOME/.config/mise" \
-    --ro-bind "$HOME/.config/pnpm" "$HOME/.config/pnpm" \
-    --ro-bind "$HOME/.config/uv" "$HOME/.config/uv" \
-    --ro-bind "$HOME/.gitconfig" "$HOME/.gitconfig" \
-    --ro-bind "$CONFIG_DIR" "$CONFIG_DIR" \
-    --ro-bind "$AGENTS_DIR" "$AGENTS_DIR" \
-    --bind "$SSH_AUTH_SOCK" "$SSH_AUTH_SOCK" \
-    --bind "$PROJECT_DIR" "$PROJECT_DIR" \
-    --bind "$APP_DATA" "$APP_DATA" \
-    --bind "$OPCODE_DIR" /opt/opencode \
-    --setenv PATH "/usr/bin:/bin:/opt/opencode:$HOME/.local/bin" \
-    -- \
-    bash -c 'eval "$(mise activate bash)"; exec /opt/opencode/opencode "$@"' bash "$@"
+# Build bwrap arguments in a maintainable array, grouped by purpose
+declare -a BWRAP_ARGS=(
+    # --- Isolation & Namespaces ---
+    --unshare-pid
+    --unshare-ipc
+    --unshare-uts
+    --die-with-parent
+
+    # --- Core System Resources ---
+    --dev /dev
+    --proc /proc
+    --tmpfs /tmp
+
+    # --- Read-Only System Root ---
+    --ro-bind /usr /usr
+    --symlink usr/lib64 /lib64
+    --symlink usr/bin /bin
+    --symlink usr/lib /lib
+
+    # --- Sandbox Identity ---
+    --hostname opencode-sandbox
+
+    # --- SSL/TLS Certificates ---
+    --ro-bind /etc/ssl /etc/ssl
+    --ro-bind /etc/ca-certificates /etc/ca-certificates
+
+    # --- User Local Data (read-only except keyrings) ---
+    --ro-bind "$HOME/.local" "$HOME/.local"
+    --tmpfs "$HOME/.local/share/keyrings"
+    --ro-bind "$HOME/.cache" "$HOME/.cache"
+
+    # --- Language Runtimes (read-only) ---
+    --ro-bind "$HOME/.bun" "$HOME/.bun"
+    --ro-bind "$HOME/.npm" "$HOME/.npm"
+    --ro-bind "$HOME/.rustup" "$HOME/.rustup"
+    --ro-bind "$HOME/.cargo/bin" "$HOME/.cargo/bin"
+    --ro-bind "$HOME/.cargo/registry" "$HOME/.cargo/registry"
+
+    # --- Tool Configurations (read-only) ---
+    --ro-bind "$HOME/.config/mise" "$HOME/.config/mise"
+    --ro-bind "$HOME/.config/pnpm" "$HOME/.config/pnpm"
+    --ro-bind "$HOME/.config/uv" "$HOME/.config/uv"
+    --ro-bind "$HOME/.gitconfig" "$HOME/.gitconfig"
+
+    # --- SSH Agent Access ---
+    --ro-bind "$SSH_AUTH_SOCK" "$SSH_AUTH_SOCK"
+
+    # --- OpenCode Specific (read-only) ---
+    --ro-bind "$CONFIG_DIR" "$CONFIG_DIR"
+    --ro-bind "$AGENTS_DIR" "$AGENTS_DIR"
+
+    # --- Read-Write Bindings ---
+    --bind "$PROJECT_DIR" "$PROJECT_DIR"
+    --bind "$APP_DATA" "$APP_DATA"
+
+    # --- OpenCode Binary ---
+    --bind "$OPCODE_DIR" /opt/opencode
+
+    # --- Environment Setup ---
+    --setenv PATH "/usr/bin:/bin:/opt/opencode:$HOME/.local/bin"
+)
+
+# Execute bwrap with all arguments and the target command
+exec bwrap "${BWRAP_ARGS[@]}" -- \
+    bash -c '
+        eval "$(mise activate bash)"
+        exec /opt/opencode/opencode "$@"
+    ' -- "$@"
