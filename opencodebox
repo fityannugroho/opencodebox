@@ -19,6 +19,14 @@
 #   opencodebox --with /data --with-ro /config --version
 # ============================================================
 
+VERSION="0.1.0"
+
+print_version() {
+    echo "opencode v$(opencode --version)"
+    echo "opencodebox v$VERSION"
+    exit 0
+}
+
 # Prerequisite checks - fail fast with helpful messages
 check_prerequisites() {
     local missing=0
@@ -60,6 +68,12 @@ declare -a REMAINING_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --version)
+            print_version
+            ;;
+        -v)
+            print_version
+            ;;
         # --with: read-write bind (allows modification inside sandbox)
         --with)
             shift
