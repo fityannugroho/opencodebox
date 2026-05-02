@@ -2,8 +2,6 @@
 
 Run OpenCode inside a bubblewrap sandbox for security isolation.
 
-## What is opencodebox?
-
 `opencodebox` is a bash script that runs [OpenCode](https://opencode.ai) (AI coding assistant) inside a sandbox using [bubblewrap](https://github.com/containers/bubblewrap). The sandbox provides process isolation with Linux namespaces (PID, IPC, UTS) and restricted filesystem access.
 
 ## Features
@@ -18,18 +16,13 @@ Run OpenCode inside a bubblewrap sandbox for security isolation.
 - **bubblewrap** (`bwrap`) - for sandboxing
 - **opencode** - AI coding assistant
 
-### Install Bubblewrap
+## Installation
 
 ```bash
-# Ubuntu/Debian
-sudo apt install bubblewrap
-
-# Arch Linux
-sudo pacman -S bubblewrap
-
-# Fedora
-sudo dnf install bubblewrap
+curl -fsSL https://raw.githubusercontent.com/fityannugroho/opencodebox/main/install.sh | bash
 ```
+
+This installs `opencodebox` to `~/.local/bin/opencodebox`. Make sure `~/.local/bin` is in your PATH.
 
 ## Usage
 
@@ -39,8 +32,8 @@ opencodebox [OPTIONS] [OPENCODE_ARGS...]
 
 ### Options
 
-- `--with /host[/sandbox]` - Bind host path read-write to sandbox
-- `--with-ro /host[/sandbox]` - Bind host path read-only to sandbox
+- `--with /host[:/sandbox]` - Bind host path read-write to sandbox
+- `--with-ro /host[:/sandbox]` - Bind host path read-only to sandbox
 
 Format: `/host/path` or `/host/path:/sandbox/path`
 
