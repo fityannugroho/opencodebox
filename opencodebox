@@ -120,7 +120,7 @@ CONFIG_DIR="$HOME/.config/opencode"
 AGENTS_DIR="$HOME/.agents"
 
 # Locate opencode binary
-OPCODE_PATH=$(which opencode)
+OPCODE_PATH=$(command -v opencode)
 OPCODE_DIR=$(dirname "$OPCODE_PATH")
 
 # Later bindings override earlier ones (--with binds come last = highest priority)
