@@ -164,7 +164,6 @@ declare -a BWRAP_ARGS=(
     --ro-bind "$HOME/.cargo/registry" "$HOME/.cargo/registry"
 
     # --- Tool Configurations (read-only) ---
-    --ro-bind "$HOME/.config/mise" "$HOME/.config/mise"
     --ro-bind "$HOME/.config/pnpm" "$HOME/.config/pnpm"
     --ro-bind "$HOME/.config/uv" "$HOME/.config/uv"
     --ro-bind "$HOME/.gitconfig" "$HOME/.gitconfig"
@@ -190,10 +189,23 @@ declare -a BWRAP_ARGS=(
 # Add extra binds from --with/--with-ro (appended last = highest priority, can override defaults)
 BWRAP_ARGS+=("${EXTRA_BINDS[@]}")
 
+# Conditionally bind mise directories if exists on host
+# Binary available via /usr or $HOME/.local bind
+# Respect MISE_* environment variables
+MISE_CONFIG_DIR="${MISE_CONFIG_DIR:-$HOME/.config/mise}"
+MISE_DATA_DIR="${MISE_DATA_DIR:-$HOME/.local/share/mise}"
+MISE_CACHE_DIR="${MISE_CACHE_DIR:-$HOME/.cache/mise}"
+
+for dir in "$MISE_CONFIG_DIR" "$MISE_DATA_DIR" "$MISE_CACHE_DIR"; do
+    if [[ -d "$dir" ]]; then
+        BWRAP_ARGS+=("--ro-bind" "$dir" "$dir")
+    fi
+done
+
 # Execute bwrap with all arguments and the target command
-# mise is activated inside sandbox for language runtime access
+# mise activation is optional - fails silently if not available
 exec bwrap "${BWRAP_ARGS[@]}" -- \
     bash -c '
-        eval "$(mise activate bash)"
+        command -v mise &>/dev/null && eval "$(mise activate bash)"
         exec /opt/opencode/opencode "$@"
     ' -- "$@"
