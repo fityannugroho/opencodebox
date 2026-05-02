@@ -1,36 +1,144 @@
 #!/bin/bash
 # opencode-sandbox
 # Run OpenCode inside bubblewrap sandbox
+#
+# Usage:
+#   opencodebox [OPTIONS] [OPENCODE_ARGS...]
+#
+# Options:
+#   --with /host[/sandbox]      Bind host path read-write (sandbox path defaults to host path)
+#   --with-ro /host[/sandbox]   Bind host path read-only (sandbox path defaults to host path)
+#   Format: /host/path or /host/path:/sandbox/path
+#
+# Examples:
+#   opencodebox --with /data
+#   opencodebox --with /mnt/data:/workspace/data
+#   opencodebox --with-ro /etc/hosts
+#   opencodebox --with /data --with-ro /config --version
+
+# Prerequisite checks - fail fast with helpful messages
+check_prerequisites() {
+    local missing=0
+
+    # Check for bwrap (bubblewrap)
+    if ! command -v bwrap &>/dev/null; then
+        echo "Error: bubblewrap (bwrap) is not installed." >&2
+        echo "" >&2
+        echo "Install bubblewrap:" >&2
+        echo "  Arch: sudo pacman -S bubblewrap" >&2
+        echo "  Ubuntu/Debian: sudo apt install bubblewrap" >&2
+        echo "  Fedora: sudo dnf install bubblewrap" >&2
+        missing=1
+    fi
+
+    # Check for opencode
+    if ! command -v opencode &>/dev/null; then
+        echo "Error: opencode is not installed or not in PATH." >&2
+        echo "" >&2
+        echo "Install opencode:" >&2
+        echo "  Using mise: mise use -g opencode" >&2
+        echo "  Or download from: https://opencode.ai" >&2
+        missing=1
+    fi
+
+    if [[ $missing -eq 1 ]]; then
+        exit 1
+    fi
+}
+
+check_prerequisites
 
 PROJECT_DIR="$PWD"
 
-# 1. Application Data (history, session, auth) - Persist read-write
+# Parse --with and --with-ro arguments
+# These allow users to bind additional paths into the sandbox
+declare -a EXTRA_BINDS=()
+declare -a REMAINING_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        # --with: read-write bind (allows modification inside sandbox)
+        --with)
+            shift
+            if [[ $# -eq 0 ]]; then
+                echo "Error: --with requires a value" >&2
+                echo "Usage: opencodebox --with /host/path or --with /host:/sandbox" >&2
+                exit 1
+            fi
+            val="$1"
+            shift
+            if [[ "$val" == *:* ]]; then
+                # Format: /host:/sandbox
+                host="${val%%:*}"
+                sandbox="${val##*:}"
+            else
+                # Format: /path (same path in sandbox)
+                host="$(realpath -e "$val" 2>/dev/null)" || {
+                    echo "Error: --with path does not exist: $val" >&2
+                    exit 1
+                }
+                sandbox="$host"
+            fi
+            EXTRA_BINDS+=("--bind" "$host" "$sandbox")
+            ;;
+        # --with-ro: read-only bind (sandbox cannot modify)
+        --with-ro)
+            shift
+            if [[ $# -eq 0 ]]; then
+                echo "Error: --with-ro requires a value" >&2
+                echo "Usage: opencodebox --with-ro /host/path or --with-ro /host:/sandbox" >&2
+                exit 1
+            fi
+            val="$1"
+            shift
+            if [[ "$val" == *:* ]]; then
+                host="${val%%:*}"
+                sandbox="${val##*:}"
+            else
+                host="$(realpath -e "$val" 2>/dev/null)" || {
+                    echo "Error: --with-ro path does not exist: $val" >&2
+                    exit 1
+                }
+                sandbox="$host"
+            fi
+            EXTRA_BINDS+=("--ro-bind" "$host" "$sandbox")
+            ;;
+        # Pass through all other args to opencode
+        *)
+            REMAINING_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# Restore remaining args for opencode
+set -- "${REMAINING_ARGS[@]}"
+
+# Define paths for persistent data storage
 APP_DATA="$HOME/.local/share/opencode"
-
-# 2. Config (settings, preferences) - Persist read-write
 CONFIG_DIR="$HOME/.config/opencode"
-
-# 3. Skills Directory (~/.agents) - Persist read-write
 AGENTS_DIR="$HOME/.agents"
 
-# 4. Find path opencode
+# Locate opencode binary
 OPCODE_PATH=$(which opencode)
 OPCODE_DIR=$(dirname "$OPCODE_PATH")
 
-# Build bwrap arguments in a maintainable array, grouped by purpose
+# Later bindings override earlier ones (--with binds come last = highest priority)
 declare -a BWRAP_ARGS=(
     # --- Isolation & Namespaces ---
+    # Unshare PID/IPC/UTS namespaces for process isolation
     --unshare-pid
     --unshare-ipc
     --unshare-uts
-    --die-with-parent
+    --die-with-parent    # Sandbox dies if parent process dies
 
     # --- Core System Resources ---
-    --dev /dev
-    --proc /proc
-    --tmpfs /tmp
+    --dev /dev           # Device nodes (null, zero, random, etc.)
+    --proc /proc         # Process information filesystem
+    --tmpfs /tmp         # Private temp directory
 
     # --- Read-Only System Root ---
+    # Bind entire /usr read-only, symlink standard directories
     --ro-bind /usr /usr
     --symlink usr/lib64 /lib64
     --symlink usr/bin /bin
@@ -45,7 +153,7 @@ declare -a BWRAP_ARGS=(
 
     # --- User Local Data (read-only except keyrings) ---
     --ro-bind "$HOME/.local" "$HOME/.local"
-    --tmpfs "$HOME/.local/share/keyrings"
+    --tmpfs "$HOME/.local/share/keyrings"    # Private keyring (no host access)
     --ro-bind "$HOME/.cache" "$HOME/.cache"
 
     # --- Language Runtimes (read-only) ---
@@ -69,8 +177,8 @@ declare -a BWRAP_ARGS=(
     --ro-bind "$AGENTS_DIR" "$AGENTS_DIR"
 
     # --- Read-Write Bindings ---
-    --bind "$PROJECT_DIR" "$PROJECT_DIR"
-    --bind "$APP_DATA" "$APP_DATA"
+    --bind "$PROJECT_DIR" "$PROJECT_DIR"    # Current project (read-write)
+    --bind "$APP_DATA" "$APP_DATA"          # OpenCode data (read-write)
 
     # --- OpenCode Binary ---
     --bind "$OPCODE_DIR" /opt/opencode
@@ -79,7 +187,11 @@ declare -a BWRAP_ARGS=(
     --setenv PATH "/usr/bin:/bin:/opt/opencode:$HOME/.local/bin"
 )
 
+# Add extra binds from --with/--with-ro (appended last = highest priority, can override defaults)
+BWRAP_ARGS+=("${EXTRA_BINDS[@]}")
+
 # Execute bwrap with all arguments and the target command
+# mise is activated inside sandbox for language runtime access
 exec bwrap "${BWRAP_ARGS[@]}" -- \
     bash -c '
         eval "$(mise activate bash)"
