@@ -13,8 +13,8 @@ Run OpenCode inside a bubblewrap sandbox for security isolation.
 
 ## Prerequisites
 
-- **bubblewrap** (`bwrap`) - for sandboxing
-- **opencode** - AI coding assistant
+- [**bubblewrap** (`bwrap`)](https://github.com/containers/bubblewrap) - for sandboxing
+- [**opencode**](https://opencode.ai) - AI coding assistant
 
 ## Installation
 
@@ -24,40 +24,55 @@ curl -fsSL https://raw.githubusercontent.com/fityannugroho/opencodebox/main/inst
 
 This installs `opencodebox` to `~/.local/bin/opencodebox`. Make sure `~/.local/bin` is in your PATH.
 
+Verify the installation :
+
+```bash
+opencodebox --version
+```
+
 ## Usage
+
+`opencodebox` is a wrapper for the `opencode` command. All arguments are passed through to `opencode` inside the sandbox.
 
 ```bash
 opencodebox [OPTIONS] [OPENCODE_ARGS...]
 ```
 
+> **Note:** The `opencode` command stays available when you need it. We didn't replace it.
+
 ### Options
+
+`opencodebox` adds the following options :
 
 - `--with /host[:/sandbox]` - Bind host path read-write to sandbox
 - `--with-ro /host[:/sandbox]` - Bind host path read-only to sandbox
 
-Format: `/host/path` or `/host/path:/sandbox/path`
+These options allow you to specify additional directories to mount inside the sandbox for read-write or read-only access.
 
 ### Examples
 
 ```bash
-# Run opencode in sandbox with read-write access to /data
+# Run sandboxed opencode in current directory
+opencodebox
+
+# Run sandboxed opencode with read-write access to /data
 opencodebox --with /data
 
-# Bind to different path in sandbox
+# Run sandboxed opencode with read-write access to /mnt/data mapped to /workspace/data
 opencodebox --with /mnt/data:/workspace/data
 
-# Read-only access to config
+# Run sandboxed opencode with read-only access to config
 opencodebox --with-ro /etc/hosts
 
-# Combine and pass arguments to opencode
-opencodebox --with /data --with-ro /config --version
+# Run sandboxed opencode server with specified bind mounts
+opencodebox --with /data --with-ro /config serve
 ```
 
 ## How It Works
 
 1. Checks prerequisites (bwrap and opencode)
 2. Parses `--with` and `--with-ro` arguments for additional bind mounts
-3. Builds bubblewrap arguments with:
+3. Builds bubblewrap arguments with :
    - Namespace isolation (PID, IPC, UTS)
    - Read-only bindings for system basics (/usr, /etc/ssl, etc.)
    - Read-only bindings for language runtimes and configs
