@@ -1,22 +1,9 @@
 #!/bin/bash
 
 # ============================================================
-# opencode-sandbox
-# Run OpenCode inside bubblewrap sandbox
-#
-# Usage:
-#   opencodebox [OPTIONS] [OPENCODE_ARGS...]
-#
-# Options:
-#   --with /host[/sandbox]      Bind host path read-write (sandbox path defaults to host path)
-#   --with-ro /host[/sandbox]   Bind host path read-only (sandbox path defaults to host path)
-#   Format: /host/path or /host/path:/sandbox/path
-#
-# Examples:
-#   opencodebox --with /data
-#   opencodebox --with /mnt/data:/workspace/data
-#   opencodebox --with-ro /etc/hosts
-#   opencodebox --with /data --with-ro /config --version
+# opencodebox
+# MIT License © 2026 fityannugroho
+# https://github.com/fityannugroho/opencodebox
 # ============================================================
 
 VERSION="0.2.0"
@@ -24,6 +11,28 @@ VERSION="0.2.0"
 print_version() {
     echo "opencode v$(opencode --version)"
     echo "opencodebox v$VERSION"
+    exit 0
+}
+
+print_help() {
+    cat <<EOF
+opencodebox - Run OpenCode inside bubblewrap sandbox
+
+Usage:
+  opencodebox [OPTIONS] [OPENCODE_ARGS...]
+
+Options:
+  --with /host[:/sandbox]      Bind host path read-write (sandbox path defaults to host path)
+  --with-ro /host[:/sandbox]   Bind host path read-only (sandbox path defaults to host path)
+  --version, -v                Show version information
+  --help, -h                   Show this help message
+
+Examples:
+  opencodebox --with ../app-backend
+  opencodebox --with /mnt/data:/workspace/data
+  opencodebox --with-ro /etc/hosts
+  opencodebox --with ~/another-project1 --with-ro ~/another-project2 serve
+EOF
     exit 0
 }
 
@@ -199,10 +208,10 @@ parse_bind_arg() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --version)
-            print_version
+        --help|-h)
+            print_help
             ;;
-        -v)
+        --version|-v)
             print_version
             ;;
         # --with: read-write bind (allows modification inside sandbox)
@@ -269,7 +278,7 @@ declare -a BWRAP_ARGS=(
     --symlink usr/lib /lib
 
     # --- Sandbox Identity ---
-    --hostname opencode-sandbox
+    --hostname opencodebox
 
     # --- SSL/TLS Certificates ---
     --ro-bind /etc/ssl /etc/ssl
