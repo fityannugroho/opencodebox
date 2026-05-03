@@ -126,3 +126,8 @@ For local SSH signature verification, the configured `gpg.ssh.allowedSignersFile
 Git-over-SSH network operations may still need explicit read-only binds for files such as `~/.ssh/config` in custom setups. User-provided binds and the current project bind can expose private keys if they include those files, so avoid binding `~/.ssh` wholesale.
 
 Forwarding an agent still lets sandboxed processes ask the agent to authenticate or sign while the socket is available. Use a dedicated signing key and consider `ssh-add -c -t 1h ~/.ssh/signing_key` for confirmation and expiry.
+
+
+## License
+
+[MIT License](LICENSE)
