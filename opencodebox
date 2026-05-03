@@ -78,12 +78,6 @@ check_prerequisites
 
 PROJECT_DIR="$PWD"
 
-if is_sensitive_path "$PROJECT_DIR"; then
-    echo "Error: Cannot run from $HOME, sensitive directories, or their ancestors as it bypasses sandbox isolation." >&2
-    echo "Please cd into a specific project directory before running." >&2
-    exit 1
-fi
-
 # Provide minimal NSS identity inside sandbox. Some tools (Git SSH signing,
 # ssh-keygen) call getpwuid() and fail if current UID has no /etc/passwd entry.
 USER_ID="$(id -u)"
@@ -246,6 +240,13 @@ done
 
 # Restore remaining args for opencode
 set -- "${REMAINING_ARGS[@]}"
+
+# Prevent running from sensitive directories (but not for --help/--version which already exited)
+if is_sensitive_path "$PROJECT_DIR"; then
+    echo "Error: Cannot run from $HOME, sensitive directories, or their ancestors as it bypasses sandbox isolation." >&2
+    echo "Please cd into a specific project directory before running." >&2
+    exit 1
+fi
 
 # Define paths for persistent data storage
 APP_DATA="$HOME/.local/share/opencode"
