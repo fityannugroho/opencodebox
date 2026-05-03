@@ -10,6 +10,7 @@ Run OpenCode inside a bubblewrap sandbox for security isolation.
 - **Controlled Filesystem**: Most system filesystem mounted read-only
 - **Custom Bind Mounts**: Add read-write or read-only access with `--with` and `--with-ro`
 - **Mise Support**: Integrated with [mise](https://mise.jdx.dev) for tool management
+- **SSH Agent Forwarding**: Supports SSH commit signing through the host `ssh-agent`
 
 ## Prerequisites
 
@@ -73,13 +74,17 @@ opencodebox --with /data --with-ro /config serve
 ## How It Works
 
 1. Checks prerequisites (bwrap and opencode)
-2. Parses `--with` and `--with-ro` arguments for additional bind mounts
-3. Builds bubblewrap arguments with :
+2. **Enforces security restrictions**:
+   - Rejects running from `$HOME`, `~/.ssh`, `~/.gnupg`, or their ancestors
+   - Rejects `--with`/`--with-ro` binds that point to sensitive paths
+   - Validates `~/.ssh` directory permissions (must be `0700`)
+3. Parses `--with` and `--with-ro` arguments for additional bind mounts
+4. Builds bubblewrap arguments with :
    - Namespace isolation (PID, IPC, UTS)
    - Read-only bindings for system basics (/usr, /etc/ssl, etc.)
    - Read-only bindings for language runtimes and configs
    - Read-write bindings for current project and opencode data
-4. Executes opencode inside the sandbox
+5. Executes opencode inside the sandbox
 
 ## Bind Mounts Structure
 
@@ -87,6 +92,9 @@ opencodebox --with /data --with-ro /config serve
 - `/usr` - System basics
 - `$HOME/.local` - User local data (except keyrings)
 - `$HOME/.cache` - Cache
+- `$HOME/.ssh/*.pub` - Sanitized OpenSSH public key material, when `$HOME/.ssh` is not a symlink
+- `$HOME/.ssh/known_hosts*` - SSH host keys, read-only, for Git-over-SSH host verification
+- `gpg.ssh.allowedSignersFile` - Configured SSH allowed signers file, read-only, for local signature verification
 - Language runtimes: `.bun`, `.npm`, `.rustup`, `.cargo`
 - Configs: `pnpm`, `uv`, `gitconfig`
 - OpenCode: `.config/opencode`, `.agents`
@@ -94,3 +102,27 @@ opencodebox --with /data --with-ro /config serve
 ### Read-Write
 - Current project directory (`$PWD`)
 - `$HOME/.local/share/opencode` - OpenCode application data
+
+### Security Restrictions
+
+`opencodebox` enforces several security restrictions to prevent sandbox escape:
+
+- **Project directory**: Cannot run from `$HOME`, `~/.ssh`, `~/.gnupg`, or their ancestors. Use a dedicated project directory.
+- **Bind mounts**: `--with` and `--with-ro` reject paths that point to or enclose sensitive locations (`$HOME`, `~/.ssh`, `~/.gnupg`).
+- **SSH directory**: `~/.ssh` must have permissions `0700`. Fix with: `chmod 700 ~/.ssh`
+
+### SSH Agent and Git Signing
+
+If `SSH_AUTH_SOCK` points to a valid socket, `opencodebox` forwards that socket into the sandbox. This allows SSH commit signing with keys already loaded by `ssh-add` on the host. This feature does not mount private SSH keys into the sandbox.
+
+For Git SSH signing, use a public key path such as `~/.ssh/id_ed25519.pub`, or an inline `key::ssh-ed25519 ...` value. Validates and sanitizes `.pub` files (rejects symlinks, hardlinks, multi-line files; validates key type, base64 format, and OpenSSH key structure with `ssh-keygen`). The sandbox receives sanitized key material only (`<key-type> <key-data>`), so comments or extra file content are not exposed.
+
+For Git-over-SSH network operations, `known_hosts` and `known_hosts2` are mounted read-only when available. This allows host verification without exposing private keys. `~/.ssh/config` is not mounted by default because it can contain broader host-specific behavior; bind it explicitly with `--with-ro ~/.ssh/config` only when needed.
+
+For local SSH signature verification, the configured `gpg.ssh.allowedSignersFile` is mounted read-only when it is an absolute regular file.
+
+> **Note:** `.pub` validation occurs at script startup. There is a small TOCTOU window between reading and validating each `.pub` file; this is an accepted limitation of shell scripting.
+
+Git-over-SSH network operations may still need explicit read-only binds for files such as `~/.ssh/config` in custom setups. User-provided binds and the current project bind can expose private keys if they include those files, so avoid binding `~/.ssh` wholesale.
+
+Forwarding an agent still lets sandboxed processes ask the agent to authenticate or sign while the socket is available. Use a dedicated signing key and consider `ssh-add -c -t 1h ~/.ssh/signing_key` for confirmation and expiry.

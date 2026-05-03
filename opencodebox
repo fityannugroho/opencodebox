@@ -27,6 +27,14 @@ print_version() {
     exit 0
 }
 
+# Helper to check if a path is sensitive (or an ancestor of one)
+is_sensitive_path() {
+    local path="$1"
+    [[ "$path" == "$HOME/.ssh" || "$path" == "$HOME/.ssh/"* || \
+       "$path" == "$HOME/.gnupg" || "$path" == "$HOME/.gnupg/"* || \
+       "$path" == "$HOME" || "$HOME" == "$path"/* || "$path" == "/" ]]
+}
+
 # Prerequisite checks - fail fast with helpful messages
 check_prerequisites() {
     local missing=0
@@ -61,10 +69,133 @@ check_prerequisites
 
 PROJECT_DIR="$PWD"
 
+if is_sensitive_path "$PROJECT_DIR"; then
+    echo "Error: Cannot run from $HOME, sensitive directories, or their ancestors as it bypasses sandbox isolation." >&2
+    echo "Please cd into a specific project directory before running." >&2
+    exit 1
+fi
+
+# Provide minimal NSS identity inside sandbox. Some tools (Git SSH signing,
+# ssh-keygen) call getpwuid() and fail if current UID has no /etc/passwd entry.
+USER_ID="$(id -u)"
+GROUP_ID="$(id -g)"
+USER_NAME="$(id -un)"
+GROUP_NAME="$(id -gn)"
+exec {PASSWD_FD}< <(printf '%s:x:%s:%s:%s:%s:/bin/bash\n' "$USER_NAME" "$USER_ID" "$GROUP_ID" "$USER_NAME" "$HOME")
+exec {GROUP_FD}< <(printf '%s:x:%s:\n' "$GROUP_NAME" "$GROUP_ID")
+# FDs intentionally not closed; bwrap reads from them via --file
+
+sanitize_ssh_public_key_file() {
+    local file="$1"
+    local key_fd line extra key_type key_data rest
+
+    command -v ssh-keygen >/dev/null 2>&1 || return 1
+
+    # Open file first to avoid TOCTOU between check and open
+    exec {key_fd}<"$file" || return 1
+
+    # Validate the opened FD (not the path) to prevent TOCTOU
+    if [[ $(stat -L -c '%F' /proc/self/fd/$key_fd 2>/dev/null) != "regular file" ]]; then
+        exec {key_fd}<&-
+        return 1
+    fi
+    if [[ $(stat -L -c '%h' /proc/self/fd/$key_fd 2>/dev/null) -ne 1 ]]; then
+        exec {key_fd}<&-
+        return 1
+    fi
+
+    IFS= read -r line <&"$key_fd" || {
+        exec {key_fd}<&-
+        return 1
+    }
+    if IFS= read -r extra <&"$key_fd"; then
+        exec {key_fd}<&-
+        return 1
+    fi
+
+    read -r key_type key_data rest <<< "$line"
+    # Accept optional comment in rest; only emit sanitized key_type + key_data
+    [[ -n "$key_data" && "$key_data" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] || {
+        exec {key_fd}<&-
+        return 1
+    }
+
+    case "$key_type" in
+        ssh-ed25519|ssh-ed25519-cert-v01@openssh.com|ssh-rsa|ssh-rsa-cert-v01@openssh.com|rsa-sha2-256|rsa-sha2-256-cert-v01@openssh.com|rsa-sha2-512|rsa-sha2-512-cert-v01@openssh.com|ecdsa-sha2-nistp256|ecdsa-sha2-nistp256-cert-v01@openssh.com|ecdsa-sha2-nistp384|ecdsa-sha2-nistp384-cert-v01@openssh.com|ecdsa-sha2-nistp521|ecdsa-sha2-nistp521-cert-v01@openssh.com|sk-ssh-ed25519@openssh.com|sk-ssh-ed25519-cert-v01@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com|sk-ecdsa-sha2-nistp256-cert-v01@openssh.com)
+            # Validate sanitized key with ssh-keygen; uses process substitution as file input
+            ssh-keygen -l -f <(printf '%s %s\n' "$key_type" "$key_data") >/dev/null 2>&1 || {
+                exec {key_fd}<&-
+                return 1
+            }
+            exec {key_fd}<&-
+            printf '%s %s\n' "$key_type" "$key_data"
+            ;;
+        *)
+            exec {key_fd}<&-
+            return 1
+            ;;
+    esac
+}
+
 # Parse --with and --with-ro arguments
 # These allow users to bind additional paths into the sandbox
 declare -a EXTRA_BINDS=()
 declare -a REMAINING_ARGS=()
+
+add_readonly_regular_file() {
+    local file="$1"
+    local fd
+
+    # Open first to avoid TOCTOU if file is swapped with symlink after check
+    # Use 2>/dev/null to suppress error if file doesn't exist, we handle it below
+    if ! exec {fd}<"$file" 2>/dev/null; then
+        echo "Warning: Cannot open '$file'. Skipping." >&2
+        return 1
+    fi
+
+    # Validate the actual file opened by FD, not the path (eliminates TOCTOU)
+    if [[ $(stat -L -c '%F' /proc/self/fd/$fd 2>/dev/null) != "regular file" ]]; then
+        echo "Warning: '$file' is not a regular file. Skipping." >&2
+        exec {fd}<&-
+        return 1
+    fi
+    if [[ $(stat -L -c '%h' /proc/self/fd/$fd 2>/dev/null) -ne 1 ]]; then
+        echo "Warning: '$file' has multiple hardlinks. Skipping." >&2
+        exec {fd}<&-
+        return 1
+    fi
+
+    # To prevent TOCTOU attacks where the file is replaced with a symlink
+    # between our checks and bwrap execution, we open it now and pass the FD
+    BWRAP_ARGS+=(--file "$fd" "$file")
+}
+
+parse_bind_arg() {
+    local bind_type="$1"
+    local val="$2"
+    local host sandbox
+
+    if [[ "$val" == *:* ]]; then
+        # Format: /host:/sandbox
+        host="${val%%:*}"
+        sandbox="${val##*:}"
+    else
+        # Format: /path (same path in sandbox)
+        host="$(realpath -e "$val" 2>/dev/null)" || {
+            echo "Error: $bind_type path does not exist: $val" >&2
+            exit 1
+        }
+        sandbox="$host"
+    fi
+
+    # Reject sensitive paths and their ancestors
+    if is_sensitive_path "$host"; then
+        echo "Error: Cannot bind sensitive directory '$host' or its ancestor into sandbox." >&2
+        exit 1
+    fi
+
+    EXTRA_BINDS+=("$bind_type" "$host" "$sandbox")
+}
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -82,21 +213,8 @@ while [[ $# -gt 0 ]]; do
                 echo "Usage: opencodebox --with /host/path or --with /host:/sandbox" >&2
                 exit 1
             fi
-            val="$1"
+            parse_bind_arg "--bind" "$1"
             shift
-            if [[ "$val" == *:* ]]; then
-                # Format: /host:/sandbox
-                host="${val%%:*}"
-                sandbox="${val##*:}"
-            else
-                # Format: /path (same path in sandbox)
-                host="$(realpath -e "$val" 2>/dev/null)" || {
-                    echo "Error: --with path does not exist: $val" >&2
-                    exit 1
-                }
-                sandbox="$host"
-            fi
-            EXTRA_BINDS+=("--bind" "$host" "$sandbox")
             ;;
         # --with-ro: read-only bind (sandbox cannot modify)
         --with-ro)
@@ -106,19 +224,8 @@ while [[ $# -gt 0 ]]; do
                 echo "Usage: opencodebox --with-ro /host/path or --with-ro /host:/sandbox" >&2
                 exit 1
             fi
-            val="$1"
+            parse_bind_arg "--ro-bind" "$1"
             shift
-            if [[ "$val" == *:* ]]; then
-                host="${val%%:*}"
-                sandbox="${val##*:}"
-            else
-                host="$(realpath -e "$val" 2>/dev/null)" || {
-                    echo "Error: --with-ro path does not exist: $val" >&2
-                    exit 1
-                }
-                sandbox="$host"
-            fi
-            EXTRA_BINDS+=("--ro-bind" "$host" "$sandbox")
             ;;
         # Pass through all other args to opencode
         *)
@@ -168,6 +275,10 @@ declare -a BWRAP_ARGS=(
     --ro-bind /etc/ssl /etc/ssl
     --ro-bind /etc/ca-certificates /etc/ca-certificates
 
+    # --- Minimal User Identity ---
+    --file "$PASSWD_FD" /etc/passwd
+    --file "$GROUP_FD" /etc/group
+
     # --- User Local Data (read-only except keyrings) ---
     --ro-bind "$HOME/.local" "$HOME/.local"
     --tmpfs "$HOME/.local/share/keyrings"    # Private keyring (no host access)
@@ -200,8 +311,67 @@ declare -a BWRAP_ARGS=(
     --setenv PATH "/usr/bin:/bin:/opt/opencode:$HOME/.local/bin"
 )
 
-# Add extra binds from --with/--with-ro (appended last = highest priority, can override defaults)
-BWRAP_ARGS+=("${EXTRA_BINDS[@]}")
+# Reject if .ssh directory has permissive permissions (should be 0700)
+# This prevents TOCTOU attacks where .pub files are modified during validation
+if [[ -d "$HOME/.ssh" && ! -L "$HOME/.ssh" ]]; then
+    if [[ $(stat -c '%a' "$HOME/.ssh" 2>/dev/null) != "700" ]]; then
+        echo "Error: $HOME/.ssh permissions must be 0700 to ensure sandbox security." >&2
+        echo "Please run: chmod 700 $HOME/.ssh" >&2
+        exit 1
+    fi
+fi
+
+# Git SSH signing often uses user.signingkey=~/.ssh/*.pub. Expose only
+# sanitized OpenSSH public key material, not file comments or extra data.
+SSH_DOT_DIR_CREATED=0
+if [[ -d "$HOME/.ssh" && ! -L "$HOME/.ssh" ]]; then
+    BWRAP_ARGS+=(--dir "$HOME/.ssh")
+    SSH_DOT_DIR_CREATED=1
+
+    add_readonly_regular_file "$HOME/.ssh/known_hosts"
+    add_readonly_regular_file "$HOME/.ssh/known_hosts2"
+
+    shopt -s nullglob
+    for pubkey in "$HOME"/.ssh/*.pub; do
+        public_key_line="$(sanitize_ssh_public_key_file "$pubkey")" || continue
+        exec {pubkey_fd}< <(printf '%s\n' "$public_key_line")
+        # FDs intentionally not closed; bwrap reads from them via --file
+        BWRAP_ARGS+=(--file "$pubkey_fd" "$pubkey")
+    done
+    shopt -u nullglob
+fi
+
+ALLOWED_SIGNERS_FILE="$(git config --path --get gpg.ssh.allowedSignersFile 2>/dev/null || true)"
+if [[ -n "$ALLOWED_SIGNERS_FILE" && "$ALLOWED_SIGNERS_FILE" == "$HOME/.ssh/"* || "$ALLOWED_SIGNERS_FILE" == "$HOME"/* ]]; then
+    add_readonly_regular_file "$ALLOWED_SIGNERS_FILE"
+else
+    [[ -n "$ALLOWED_SIGNERS_FILE" ]] && echo "Warning: allowedSignersFile '$ALLOWED_SIGNERS_FILE' not under \$HOME/.ssh or \$HOME; skipping" >&2
+fi
+
+# Forward ssh-agent after .ssh setup so the socket bind remains visible even
+# when the agent lives under ~/.ssh.
+if [[ -n "${SSH_AUTH_SOCK:-}" && "$SSH_AUTH_SOCK" == /* && -S "$SSH_AUTH_SOCK" ]]; then
+    SSH_AUTH_DIR="$(dirname "$SSH_AUTH_SOCK")"
+    # Create parent dirs if:
+    # 1. SSH_AUTH_DIR is not $HOME (already accessible via other binds)
+    # 2. Not the case where (SSH_AUTH_DIR is $HOME/.ssh AND we already created it)
+    if [[ "$SSH_AUTH_DIR" != "$HOME" && !( "$SSH_AUTH_DIR" == "$HOME/.ssh" && "$SSH_DOT_DIR_CREATED" -eq 1 ) ]]; then
+        # Create parent directories for deep socket paths (e.g. /run/user/UID/keyring).
+        # bwrap --dir does not auto-create parents, so we add each component.
+        _base=""
+        IFS=/ read -ra _parts <<< "$SSH_AUTH_DIR"
+        for _p in "${_parts[@]}"; do
+            [[ -z "$_p" ]] && continue
+            _base="$_base/$_p"
+            BWRAP_ARGS+=(--dir "$_base")
+        done
+        unset _base _parts _p
+    fi
+    BWRAP_ARGS+=(--bind "$SSH_AUTH_SOCK" "$SSH_AUTH_SOCK")
+    BWRAP_ARGS+=(--setenv SSH_AUTH_SOCK "$SSH_AUTH_SOCK")
+else
+    BWRAP_ARGS+=(--unsetenv SSH_AUTH_SOCK)
+fi
 
 # Conditionally bind mise directories if exists on host
 # Binary available via /usr or $HOME/.local bind
@@ -212,9 +382,17 @@ MISE_CACHE_DIR="${MISE_CACHE_DIR:-$HOME/.cache/mise}"
 
 for dir in "$MISE_CONFIG_DIR" "$MISE_DATA_DIR" "$MISE_CACHE_DIR"; do
     if [[ -d "$dir" ]]; then
+        # Prevent binding sensitive directories or their ancestors
+        if is_sensitive_path "$dir"; then
+            echo "Warning: MISE directory '$dir' points to or encloses a sensitive location. Skipping bind." >&2
+            continue
+        fi
         BWRAP_ARGS+=("--ro-bind" "$dir" "$dir")
     fi
 done
+
+# Add extra binds from --with/--with-ro last so user choices have highest priority.
+BWRAP_ARGS+=("${EXTRA_BINDS[@]}")
 
 # Execute bwrap with all arguments and the target command
 # mise activation is optional - fails silently if not available
