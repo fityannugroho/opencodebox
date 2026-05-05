@@ -134,7 +134,7 @@ If `SSH_AUTH_SOCK` points to a valid socket, `opencodebox` forwards that socket 
 
 For Git SSH signing, use a public key path such as `~/.ssh/id_ed25519.pub`, or an inline `key::ssh-ed25519 ...` value. Validates and sanitizes `.pub` files (rejects symlinks, hardlinks, multi-line files; validates key type, base64 format, and OpenSSH key structure with `ssh-keygen`). The sandbox receives sanitized key material only (`<key-type> <key-data>`), so comments or extra file content are not exposed.
 
-For Git-over-SSH network operations, `known_hosts` and `known_hosts2` are mounted read-only when available. This allows host verification without exposing private keys. `~/.ssh/config` is not mounted by default because it can contain broader host-specific behavior; bind it explicitly with `--with-ro ~/.ssh/config` only when needed.
+For Git-over-SSH network operations, `known_hosts` is mounted read-only when available. This allows host verification without exposing private keys. `~/.ssh/config` is not mounted by default because it can contain broader host-specific behavior; bind it explicitly with `--with-ro ~/.ssh/config` only when needed.
 
 For local SSH signature verification, the configured `gpg.ssh.allowedSignersFile` is mounted read-only when it is an absolute regular file.
 

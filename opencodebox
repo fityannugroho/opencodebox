@@ -377,7 +377,6 @@ if [[ -d "$HOME/.ssh" && ! -L "$HOME/.ssh" ]]; then
     SSH_DOT_DIR_CREATED=1
 
     add_readonly_regular_file "$HOME/.ssh/known_hosts"
-    add_readonly_regular_file "$HOME/.ssh/known_hosts2"
 
     shopt -s nullglob
     for pubkey in "$HOME"/.ssh/*.pub; do
