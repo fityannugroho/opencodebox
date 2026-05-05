@@ -11,7 +11,7 @@ Run OpenCode inside a bubblewrap sandbox for security isolation.
 - **Custom Bind Mounts**: Add read-write or read-only access with `--with` and `--with-ro`
 - **Mise Support**: Integrated with [mise](https://mise.jdx.dev) for tool management
 - **SSH Agent Forwarding**: Supports SSH commit signing through the host `ssh-agent`
-- **CVE-2026-31431 Mitigation**: Seccomp filter blocks `AF_ALG` sockets to prevent "Copy Fail" privilege escalation vulnerability
+- **Copy Fail Mitigation**: Seccomp filter blocks `AF_ALG` sockets to prevent [Copy Fail](https://copy.fail) privilege escalation vulnerability
 
 ## Prerequisites
 
@@ -19,22 +19,6 @@ Run OpenCode inside a bubblewrap sandbox for security isolation.
 - [**opencode**](https://opencode.ai) - AI coding assistant
 
 > **Security Note (CVE-2017-5226):** Bubblewrap sandbox can be escaped via `TIOCSTI` ioctl if the kernel allows it. Since Linux 6.2, `TIOCSTI` is restricted when `dev.tty.legacy_tiocsti=0` (default). On older kernels, ensure bubblewrap >= 0.1.5 (uses `setsid()` fix) or enable seccomp filtering. The `install.sh` script performs this check automatically.
-
-> **Security Note (CVE-2026-31431 - "Copy Fail"):** A local privilege escalation vulnerability in the Linux kernel's `algif_aead` crypto module allows unprivileged users to gain root access. `opencodebox` includes a seccomp BPF filter that blocks `socket(AF_ALG)` creation, effectively cutting off the exploit's entry point inside the sandbox. This is a defense-in-depth mitigation (not a kernel patch replacement). Supported architectures: **x86_64** and **aarch64**. The filter is automatically applied if the corresponding `.bpf` file is available; otherwise a warning is displayed and the sandbox runs without it. The seccomp filter is stored at `~/.local/share/opencodebox/seccomp-af_alg.bpf` after installation.
-
-## Development Dependencies
-
-To generate the seccomp BPF filter files (`.bpf`) for CVE-2026-31431 mitigation:
-
-- **gcc** - C compiler
-- **libseccomp-dev** - libseccomp development headers and library
-
-Install on Ubuntu/Debian:
-```bash
-sudo apt install gcc libseccomp-dev
-```
-
-The `.bpf` filter files are pre-generated and shipped with the repository, so end users do **not** need these development dependencies.
 
 ## Installation
 
@@ -90,18 +74,17 @@ opencodebox --with /data --with-ro /config serve
 
 ## How It Works
 
-1. Checks prerequisites (bwrap and opencode)
-2. **Enforces security restrictions**:
+1. Parse arguments (`--with`, `--with-ro`, `--version`, `--help`)
+2. Check prerequisites (bwrap and opencode)
+3. Load seccomp filter for Copy Fail mitigation
+4. **Enforce security restrictions**:
    - Rejects running from `$HOME`, `~/.ssh`, `~/.gnupg`, or their ancestors
-   - Rejects `--with`/`--with-ro` binds that point to sensitive paths
+   - Rejects sensitive paths in `--with`/`--with-ro` binds
    - Validates `~/.ssh` directory permissions (must be `0700`)
-3. Parses `--with` and `--with-ro` arguments for additional bind mounts
-4. Builds bubblewrap arguments with :
-   - Namespace isolation (PID, IPC, UTS)
-   - Read-only bindings for system basics (/usr, /etc/ssl, etc.)
-   - Read-only bindings for language runtimes and configs
-   - Read-write bindings for current project and opencode data
-5. Executes opencode inside the sandbox
+5. Build bubblewrap sandbox with namespace isolation and bind mounts
+6. Setup SSH (sanitized `.pub` keys, `known_hosts`, agent forwarding)
+7. Add mise integration and extra bind mounts
+8. Execute opencode inside the sandbox
 
 ## Bind Mounts Structure
 
@@ -120,7 +103,7 @@ opencodebox --with /data --with-ro /config serve
 - Current project directory (`$PWD`)
 - `$HOME/.local/share/opencode` - OpenCode application data
 
-### Security Restrictions
+## Security Restrictions
 
 `opencodebox` enforces several security restrictions to prevent sandbox escape:
 
@@ -128,7 +111,7 @@ opencodebox --with /data --with-ro /config serve
 - **Bind mounts**: `--with` and `--with-ro` reject paths that point to or enclose sensitive locations (`$HOME`, `~/.ssh`, `~/.gnupg`).
 - **SSH directory**: `~/.ssh` must have permissions `0700`. Fix with: `chmod 700 ~/.ssh`
 
-### SSH Agent and Git Signing
+## SSH Agent and Git Signing
 
 If `SSH_AUTH_SOCK` points to a valid socket, `opencodebox` forwards that socket into the sandbox. This allows SSH commit signing with keys already loaded by `ssh-add` on the host. This feature does not mount private SSH keys into the sandbox.
 
@@ -144,6 +127,41 @@ Git-over-SSH network operations may still need explicit read-only binds for file
 
 Forwarding an agent still lets sandboxed processes ask the agent to authenticate or sign while the socket is available. Use a dedicated signing key and consider `ssh-add -c -t 1h ~/.ssh/signing_key` for confirmation and expiry.
 
+## Copy Fail Mitigation
+
+A local privilege escalation vulnerability in the Linux kernel's `algif_aead` crypto module ([CVE-2026-31431 a.k.a "Copy Fail"](https://copy.fail)) allows unprivileged users to gain root access.
+
+`opencodebox` includes a seccomp BPF filter that blocks `socket(AF_ALG)` creation, effectively cutting off the exploit's entry point inside the sandbox. This is a defense-in-depth mitigation (not a kernel patch replacement). Supported architectures: **x86_64** and **aarch64**.
+
+The filter is automatically applied if the corresponding `.bpf` file is available; otherwise a warning is displayed and the sandbox runs without it. The seccomp filter is stored at `~/.local/share/opencodebox/seccomp-af_alg.bpf` after installation.
+
+## Development
+
+To generate the seccomp BPF filter files (`.bpf`) for Copy Fail mitigation:
+
+**Dependencies:**
+- **gcc** - C compiler
+- **libseccomp-dev** - libseccomp development headers and library
+
+Install on Ubuntu/Debian:
+```bash
+sudo apt install gcc libseccomp-dev
+```
+
+**Compile and generate:**
+```bash
+# Compile the BPF generator
+gcc -o seccomp/seccomp-af_alg-gen seccomp/seccomp-af_alg-gen.c -lseccomp
+
+# Generate BPF filters for each architecture
+./seccomp/seccomp-af_alg-gen x86_64 > seccomp/seccomp-af_alg-x86_64.bpf
+./seccomp/seccomp-af_alg-gen aarch64 > seccomp/seccomp-af_alg-aarch64.bpf
+
+# Clean up compiled generator
+rm seccomp/seccomp-af_alg-gen
+```
+
+The `.bpf` filter files are pre-generated and shipped with the repository, so end users do **not** need these development dependencies.
 
 ## License
 
