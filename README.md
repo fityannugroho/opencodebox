@@ -11,6 +11,7 @@ Run OpenCode inside a bubblewrap sandbox for security isolation.
 - **Custom Bind Mounts**: Add read-write or read-only access with `--with` and `--with-ro`
 - **Mise Support**: Integrated with [mise](https://mise.jdx.dev) for tool management
 - **SSH Agent Forwarding**: Supports SSH commit signing through the host `ssh-agent`
+- **CVE-2026-31431 Mitigation**: Seccomp filter blocks `AF_ALG` sockets to prevent "Copy Fail" privilege escalation vulnerability
 
 ## Prerequisites
 
@@ -18,6 +19,22 @@ Run OpenCode inside a bubblewrap sandbox for security isolation.
 - [**opencode**](https://opencode.ai) - AI coding assistant
 
 > **Security Note (CVE-2017-5226):** Bubblewrap sandbox can be escaped via `TIOCSTI` ioctl if the kernel allows it. Since Linux 6.2, `TIOCSTI` is restricted when `dev.tty.legacy_tiocsti=0` (default). On older kernels, ensure bubblewrap >= 0.1.5 (uses `setsid()` fix) or enable seccomp filtering. The `install.sh` script performs this check automatically.
+
+> **Security Note (CVE-2026-31431 - "Copy Fail"):** A local privilege escalation vulnerability in the Linux kernel's `algif_aead` crypto module allows unprivileged users to gain root access. `opencodebox` includes a seccomp BPF filter that blocks `socket(AF_ALG)` creation, effectively cutting off the exploit's entry point inside the sandbox. This is a defense-in-depth mitigation (not a kernel patch replacement). Supported architectures: **x86_64** and **aarch64**. The filter is automatically applied if the corresponding `.bpf` file is available; otherwise a warning is displayed and the sandbox runs without it. The seccomp filter is stored at `~/.local/share/opencodebox/seccomp-af_alg.bpf` after installation.
+
+## Development Dependencies
+
+To generate the seccomp BPF filter files (`.bpf`) for CVE-2026-31431 mitigation:
+
+- **gcc** - C compiler
+- **libseccomp-dev** - libseccomp development headers and library
+
+Install on Ubuntu/Debian:
+```bash
+sudo apt install gcc libseccomp-dev
+```
+
+The `.bpf` filter files are pre-generated and shipped with the repository, so end users do **not** need these development dependencies.
 
 ## Installation
 

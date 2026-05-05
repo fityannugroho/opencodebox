@@ -12,7 +12,13 @@ echo "Installing opencodebox from $REPO..."
 mkdir -p "$INSTALL_DIR"
 
 # Download opencodebox script
-curl -fsSL "$RAW_URL" -o "$INSTALL_PATH"
+if curl -fsSL "$RAW_URL" -o "${INSTALL_PATH}.tmp"; then
+    mv "${INSTALL_PATH}.tmp" "$INSTALL_PATH"
+else
+    rm -f "${INSTALL_PATH}.tmp"
+    echo "ERROR: Failed to download opencodebox from $RAW_URL"
+    exit 1
+fi
 
 # Make it executable
 chmod +x "$INSTALL_PATH"
@@ -37,6 +43,43 @@ fi
 if command -v bwrap >/dev/null 2>&1; then
     BWRAP_VERSION=$(bwrap --version 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -1)
     echo "  [INFO] bubblewrap version: $BWRAP_VERSION"
+fi
+
+# Download seccomp BPF filter for AF_ALG socket restriction (CVE-2026-31431)
+echo ""
+echo "Setting up seccomp BPF filter..."
+
+SECCOMP_DIR="$HOME/.local/share/opencodebox"
+mkdir -p "$SECCOMP_DIR"
+
+ARCH=$(uname -m)
+case "$ARCH" in
+    x86_64)
+        SECCOMP_ARCH="x86_64"
+        ;;
+    aarch64|arm64)
+        SECCOMP_ARCH="aarch64"
+        ;;
+    *)
+        echo "  [WARN] Unsupported architecture: $ARCH"
+        echo "    Seccomp BPF filter not available for this architecture"
+        echo "    opencodebox will run without AF_ALG socket restriction"
+        SECCOMP_ARCH=""
+        ;;
+esac
+
+if [[ -n "$SECCOMP_ARCH" ]]; then
+    SECCOMP_URL="https://raw.githubusercontent.com/$REPO/main/seccomp/seccomp-af_alg-${SECCOMP_ARCH}.bpf"
+    SECCOMP_FILE="$SECCOMP_DIR/seccomp-af_alg.bpf"
+
+    if curl -fsSL "$SECCOMP_URL" -o "${SECCOMP_FILE}.tmp"; then
+        mv "${SECCOMP_FILE}.tmp" "$SECCOMP_FILE"
+        echo "  [OK] Seccomp BPF filter downloaded for $SECCOMP_ARCH"
+    else
+        rm -f "${SECCOMP_FILE}.tmp"
+        echo "  [WARN] Failed to download seccomp BPF filter for $SECCOMP_ARCH"
+        echo "    opencodebox will run without AF_ALG socket restriction"
+    fi
 fi
 
 # Check if install directory is in PATH
