@@ -5,6 +5,46 @@
 #include <unistd.h>
 #include <errno.h>
 
+// Socket address families (linux/socket.h)
+#define AF_INET     2
+#define AF_INET6    10
+#define AF_RXRPC    33
+#define AF_ALG      38
+
+// IP protocols (linux/in.h)
+#define IPPROTO_ESP     50
+#define IPPROTO_IPCOMP 108
+
+static int block_esp_filter(scmp_filter_ctx ctx) {
+    int rc;
+    rc = seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 2,
+        SCMP_A0(SCMP_CMP_EQ, AF_INET), SCMP_A2(SCMP_CMP_EQ, IPPROTO_ESP));
+    if (rc < 0) return rc;
+    rc = seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 2,
+        SCMP_A0(SCMP_CMP_EQ, AF_INET6), SCMP_A2(SCMP_CMP_EQ, IPPROTO_ESP));
+    return rc;
+}
+
+static int block_rxrpc_filter(scmp_filter_ctx ctx) {
+    return seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 1,
+        SCMP_A0(SCMP_CMP_EQ, AF_RXRPC));
+}
+
+static int block_ipcomp_filter(scmp_filter_ctx ctx) {
+    int rc;
+    rc = seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 2,
+        SCMP_A0(SCMP_CMP_EQ, AF_INET), SCMP_A2(SCMP_CMP_EQ, IPPROTO_IPCOMP));
+    if (rc < 0) return rc;
+    rc = seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 2,
+        SCMP_A0(SCMP_CMP_EQ, AF_INET6), SCMP_A2(SCMP_CMP_EQ, IPPROTO_IPCOMP));
+    return rc;
+}
+
+static int block_af_alg_filter(scmp_filter_ctx ctx) {
+    return seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 1,
+        SCMP_A0(SCMP_CMP_EQ, AF_ALG));
+}
+
 int main(int argc, char *argv[]) {
     scmp_filter_ctx ctx = NULL;
     uint32_t target_arch;
@@ -60,16 +100,30 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Block socket(AF_ALG) with EPERM
-    rc = seccomp_rule_add(
-        ctx,
-        SCMP_ACT_ERRNO(EPERM),
-        SCMP_SYS(socket),
-        1,
-        SCMP_A0(SCMP_CMP_EQ, 38)
-    );
+    rc = block_esp_filter(ctx);
     if (rc < 0) {
-        fprintf(stderr, "seccomp_rule_add failed: %s\n", strerror(-rc));
+        fprintf(stderr, "block_esp_filter failed: %s\n", strerror(-rc));
+        seccomp_release(ctx);
+        return EXIT_FAILURE;
+    }
+
+    rc = block_rxrpc_filter(ctx);
+    if (rc < 0) {
+        fprintf(stderr, "block_rxrpc_filter failed: %s\n", strerror(-rc));
+        seccomp_release(ctx);
+        return EXIT_FAILURE;
+    }
+
+    rc = block_ipcomp_filter(ctx);
+    if (rc < 0) {
+        fprintf(stderr, "block_ipcomp_filter failed: %s\n", strerror(-rc));
+        seccomp_release(ctx);
+        return EXIT_FAILURE;
+    }
+
+    rc = block_af_alg_filter(ctx);
+    if (rc < 0) {
+        fprintf(stderr, "block_af_alg_filter failed: %s\n", strerror(-rc));
         seccomp_release(ctx);
         return EXIT_FAILURE;
     }

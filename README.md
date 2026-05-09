@@ -11,7 +11,7 @@ Run OpenCode inside a bubblewrap sandbox for security isolation.
 - **Custom Bind Mounts**: Add read-write or read-only access with `--with` and `--with-ro`
 - **Mise Support**: Integrated with [mise](https://mise.jdx.dev) for tool management
 - **SSH Agent Forwarding**: Supports SSH commit signing through the host `ssh-agent`
-- **Copy Fail Mitigation**: Seccomp filter blocks `AF_ALG` sockets to prevent [Copy Fail](https://copy.fail) privilege escalation vulnerability
+- **Seccomp Sandbox Filter**: Mitigates kernel privilege escalation vulnerabilities (see [details](#seccomp-sandbox-filter))
 
 ## Prerequisites
 
@@ -76,7 +76,7 @@ opencodebox --with /data --with-ro /config serve
 
 1. Parse arguments (`--with`, `--with-ro`, `--version`, `--help`)
 2. Check prerequisites (bwrap and opencode)
-3. Load seccomp filter for Copy Fail mitigation
+3. Load seccomp sandbox filter (see [details](#seccomp-sandbox-filter))
 4. **Enforce security restrictions**:
    - Rejects running from `$HOME`, `~/.ssh`, `~/.gnupg`, or their ancestors
    - Rejects sensitive paths in `--with`/`--with-ro` binds
@@ -127,17 +127,31 @@ Git-over-SSH network operations may still need explicit read-only binds for file
 
 Forwarding an agent still lets sandboxed processes ask the agent to authenticate or sign while the socket is available. Use a dedicated signing key and consider `ssh-add -c -t 1h ~/.ssh/signing_key` for confirmation and expiry.
 
-## Copy Fail Mitigation
+## Seccomp Sandbox Filter
 
-A local privilege escalation vulnerability in the Linux kernel's `algif_aead` crypto module ([CVE-2026-31431 a.k.a "Copy Fail"](https://copy.fail)) allows unprivileged users to gain root access.
+`opencodebox` includes a seccomp BPF filter that blocks socket creation for several protocol families to mitigate kernel privilege escalation vulnerabilities from inside the sandbox:
 
-`opencodebox` includes a seccomp BPF filter that blocks `socket(AF_ALG)` creation, effectively cutting off the exploit's entry point inside the sandbox. This is a defense-in-depth mitigation (not a kernel patch replacement). Supported architectures: **x86_64** and **aarch64**.
+| Vulnerability | CVEs | Blocked Sockets |
+|---|---|---|
+| Copy Fail | [CVE-2026-31431](https://copy.fail) | `socket(AF_ALG, *, *)` |
+| Dirty Frag (ESP) | [CVE-2026-43284](https://github.com/V4bel/dirtyfrag) | `socket(AF_INET/AF_INET6, *, IPPROTO_ESP)` |
+| Dirty Frag (RxRPC) | [CVE-2026-43500](https://github.com/V4bel/dirtyfrag) | `socket(AF_RXRPC, *, *)` |
+| Dirty Frag (IPCOMP) | [CVE-2026-43284](https://github.com/V4bel/dirtyfrag) | `socket(AF_INET/AF_INET6, *, IPPROTO_IPCOMP)` |
 
-The filter is automatically applied if the corresponding `.bpf` file is available; otherwise a warning is displayed and the sandbox runs without it. The seccomp filter is stored at `~/.local/share/opencodebox/seccomp-af_alg.bpf` after installation.
+These are defense-in-depth mitigations and do not replace kernel patches. Supported architectures: **x86_64** and **aarch64**.
+
+The filter is automatically applied if the corresponding `.bpf` file is available; otherwise a warning is displayed and the sandbox runs without it. The seccomp filter is stored at `~/.local/share/opencodebox/seccomp-security.bpf` after installation.
+
+### References
+
+- [Copy Fail — CVE-2026-31431](https://copy.fail)
+- [Dirty Frag — CVE-2026-43284 / CVE-2026-43500](https://github.com/V4bel/dirtyfrag)
+- [Ubuntu Security Advisory — Dirty Frag](https://ubuntu.com/blog/dirty-frag-linux-vulnerability-fixes-available)
+- [AWS Security Bulletin — 2026-027](https://aws.amazon.com/security/security-bulletins/2026-027-aws/)
 
 ## Development
 
-To generate the seccomp BPF filter files (`.bpf`) for Copy Fail mitigation:
+To generate the seccomp BPF filter files (`.bpf`):
 
 **Dependencies:**
 - **gcc** - C compiler
@@ -151,14 +165,14 @@ sudo apt install gcc libseccomp-dev
 **Compile and generate:**
 ```bash
 # Compile the BPF generator
-gcc -o seccomp/seccomp-af_alg-gen seccomp/seccomp-af_alg-gen.c -lseccomp
+gcc -o seccomp/seccomp-security-gen seccomp/seccomp-security-gen.c -lseccomp
 
 # Generate BPF filters for each architecture
-./seccomp/seccomp-af_alg-gen x86_64 > seccomp/seccomp-af_alg-x86_64.bpf
-./seccomp/seccomp-af_alg-gen aarch64 > seccomp/seccomp-af_alg-aarch64.bpf
+./seccomp/seccomp-security-gen x86_64 > seccomp/seccomp-security-x86_64.bpf
+./seccomp/seccomp-security-gen aarch64 > seccomp/seccomp-security-aarch64.bpf
 
 # Clean up compiled generator
-rm seccomp/seccomp-af_alg-gen
+rm seccomp/seccomp-security-gen
 ```
 
 The `.bpf` filter files are pre-generated and shipped with the repository, so end users do **not** need these development dependencies.

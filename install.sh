@@ -45,7 +45,7 @@ if command -v bwrap >/dev/null 2>&1; then
     echo "  [INFO] bubblewrap version: $BWRAP_VERSION"
 fi
 
-# Download seccomp BPF filter for AF_ALG socket restriction (CVE-2026-31431)
+# Download seccomp BPF filter
 echo ""
 echo "Setting up seccomp BPF filter..."
 
@@ -63,14 +63,14 @@ case "$ARCH" in
     *)
         echo "  [WARN] Unsupported architecture: $ARCH"
         echo "    Seccomp BPF filter not available for this architecture"
-        echo "    opencodebox will run without AF_ALG socket restriction"
+        echo "    opencodebox will run without seccomp sandbox filter"
         SECCOMP_ARCH=""
         ;;
 esac
 
 if [[ -n "$SECCOMP_ARCH" ]]; then
-    SECCOMP_URL="https://raw.githubusercontent.com/$REPO/main/seccomp/seccomp-af_alg-${SECCOMP_ARCH}.bpf"
-    SECCOMP_FILE="$SECCOMP_DIR/seccomp-af_alg.bpf"
+    SECCOMP_URL="https://raw.githubusercontent.com/$REPO/main/seccomp/seccomp-security-${SECCOMP_ARCH}.bpf"
+    SECCOMP_FILE="$SECCOMP_DIR/seccomp-security.bpf"
 
     if curl -fsSL "$SECCOMP_URL" -o "${SECCOMP_FILE}.tmp"; then
         mv "${SECCOMP_FILE}.tmp" "$SECCOMP_FILE"
@@ -78,7 +78,7 @@ if [[ -n "$SECCOMP_ARCH" ]]; then
     else
         rm -f "${SECCOMP_FILE}.tmp"
         echo "  [WARN] Failed to download seccomp BPF filter for $SECCOMP_ARCH"
-        echo "    opencodebox will run without AF_ALG socket restriction"
+        echo "    opencodebox will run without seccomp sandbox filter"
     fi
 fi
 

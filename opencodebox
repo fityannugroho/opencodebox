@@ -226,9 +226,9 @@ done
 
 check_prerequisites
 
-# Seccomp BPF filter loading for CVE-2026-31431 mitigation
+# Seccomp BPF filter loading
 SECCOMP_FD=""
-SECCOMP_FILE="$HOME/.local/share/opencodebox/seccomp-af_alg.bpf"
+SECCOMP_FILE="$HOME/.local/share/opencodebox/seccomp-security.bpf"
 
 # Detect and map architecture
 ARCH=$(uname -m)
@@ -249,14 +249,14 @@ if [[ "$SECCOMP_ARCH" != "unsupported" ]]; then
     # Open file atomically to avoid TOCTOU race condition
     if ! { exec {SECCOMP_FD}< "$SECCOMP_FILE"; } 2>/dev/null; then
         if [[ ! -e "$SECCOMP_FILE" ]]; then
-            echo "Warning: Seccomp BPF filter not found at $SECCOMP_FILE. Continuing without filter." >&2
+            echo "Warning: Seccomp BPF sandbox filter not found at $SECCOMP_FILE. Continuing without seccomp mitigations." >&2
         else
-            echo "Warning: Failed to open seccomp BPF filter at $SECCOMP_FILE. Continuing without filter." >&2
+            echo "Warning: Failed to open seccomp BPF sandbox filter at $SECCOMP_FILE. Continuing without seccomp mitigations." >&2
         fi
         SECCOMP_FD=""
     fi
 else
-    echo "Warning: Unsupported architecture $ARCH for seccomp filter. Continuing without filter." >&2
+    echo "Warning: Unsupported architecture $ARCH for seccomp sandbox filter. Continuing without seccomp mitigations." >&2
 fi
 
 PROJECT_DIR="$PWD"
