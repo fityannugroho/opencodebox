@@ -135,6 +135,7 @@ Forwarding an agent still lets sandboxed processes ask the agent to authenticate
 |---|---|---|
 | Copy Fail | [CVE-2026-31431](https://copy.fail) | `socket(AF_ALG, *, *)` |
 | Dirty Frag (ESP) | [CVE-2026-43284](https://github.com/V4bel/dirtyfrag) | `socket(AF_INET/AF_INET6, *, IPPROTO_ESP)` |
+| Dirty Frag (ESP Bypass) | [CVE-2026-43284](https://github.com/V4bel/dirtyfrag) | `socket(AF_NETLINK, *, NETLINK_XFRM)`, `setsockopt(*, IPPROTO_UDP, UDP_ENCAP, *)` |
 | Dirty Frag (RxRPC) | [CVE-2026-43500](https://github.com/V4bel/dirtyfrag) | `socket(AF_RXRPC, *, *)` |
 | Dirty Frag (IPCOMP) | [CVE-2026-43284](https://github.com/V4bel/dirtyfrag) | `socket(AF_INET/AF_INET6, *, IPPROTO_IPCOMP)` |
 

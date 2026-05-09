@@ -8,12 +8,20 @@
 // Socket address families (linux/socket.h)
 #define AF_INET     2
 #define AF_INET6    10
+#define AF_NETLINK  16
 #define AF_RXRPC    33
 #define AF_ALG      38
 
+// Netlink protocols (linux/netlink.h)
+#define NETLINK_XFRM 6
+
 // IP protocols (linux/in.h)
+#define IPPROTO_UDP     17
 #define IPPROTO_ESP     50
 #define IPPROTO_IPCOMP 108
+
+// UDP options (linux/udp.h)
+#define UDP_ENCAP       100
 
 static int block_esp_filter(scmp_filter_ctx ctx) {
     int rc;
@@ -28,6 +36,16 @@ static int block_esp_filter(scmp_filter_ctx ctx) {
 static int block_rxrpc_filter(scmp_filter_ctx ctx) {
     return seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 1,
         SCMP_A0(SCMP_CMP_EQ, AF_RXRPC));
+}
+
+static int block_xfrm_netlink_filter(scmp_filter_ctx ctx) {
+    return seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(socket), 2,
+        SCMP_A0(SCMP_CMP_EQ, AF_NETLINK), SCMP_A2(SCMP_CMP_EQ, NETLINK_XFRM));
+}
+
+static int block_udp_encap_filter(scmp_filter_ctx ctx) {
+    return seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(setsockopt), 2,
+        SCMP_A1(SCMP_CMP_EQ, IPPROTO_UDP), SCMP_A2(SCMP_CMP_EQ, UDP_ENCAP));
 }
 
 static int block_ipcomp_filter(scmp_filter_ctx ctx) {
@@ -110,6 +128,20 @@ int main(int argc, char *argv[]) {
     rc = block_rxrpc_filter(ctx);
     if (rc < 0) {
         fprintf(stderr, "block_rxrpc_filter failed: %s\n", strerror(-rc));
+        seccomp_release(ctx);
+        return EXIT_FAILURE;
+    }
+
+    rc = block_xfrm_netlink_filter(ctx);
+    if (rc < 0) {
+        fprintf(stderr, "block_xfrm_netlink_filter failed: %s\n", strerror(-rc));
+        seccomp_release(ctx);
+        return EXIT_FAILURE;
+    }
+
+    rc = block_udp_encap_filter(ctx);
+    if (rc < 0) {
+        fprintf(stderr, "block_udp_encap_filter failed: %s\n", strerror(-rc));
         seccomp_release(ctx);
         return EXIT_FAILURE;
     }
