@@ -431,6 +431,11 @@ if command -v uv >/dev/null 2>&1; then
     [[ -d "$HOME/.config/uv" ]] && BWRAP_ARGS+=(--ro-bind "$HOME/.config/uv" "$HOME/.config/uv")
 fi
 
+# pipenv (uses ~/.local/share/virtualenvs as centralized store)
+if command -v pipenv >/dev/null 2>&1; then
+    [[ -d "$HOME/.local/share/virtualenvs" ]] && BWRAP_ARGS+=(--tmpfs "$HOME/.local/share/virtualenvs")
+fi
+
 # Rust / Cargo
 if command -v cargo >/dev/null 2>&1; then
     [[ -d "$HOME/.rustup" ]] && BWRAP_ARGS+=(--ro-bind "$HOME/.rustup" "$HOME/.rustup")

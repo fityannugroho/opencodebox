@@ -83,7 +83,7 @@ opencodebox --with /data --with-ro /config serve
    - Validates `~/.ssh` directory permissions (must be `0700`)
 5. Build bubblewrap sandbox with namespace isolation and bind mounts
 6. Setup SSH (sanitized `.pub` keys, `known_hosts`, agent forwarding)
-7. Add conditional tool mounts (bun, npm, pnpm, uv, cargo, git, mise) and extra bind mounts
+7. Add conditional tool mounts (bun, npm, pnpm, uv, pipenv, cargo, git, mise) and extra bind mounts
 8. Execute opencode inside the sandbox
 
 ## Bind Mounts Structure
@@ -114,6 +114,7 @@ Each tool is mounted only when `command -v <tool>` succeeds on the host. If the 
 - **npm** — `~/.npm` (tmpfs) + `~/.npmrc` (read-only, if exists)
 - **pnpm** — `~/.config/pnpm` (read-only, if exists) + `~/.local/share/pnpm/store` (tmpfs)
 - **uv** — `~/.config/uv` (read-only, if exists)
+- **pipenv** — `~/.local/share/virtualenvs` (tmpfs, centralized store)
 - **Rust/Cargo** — `~/.rustup`, `~/.cargo/bin` (read-only, if exists) + `~/.cargo/registry` (tmpfs) + `~/.cargo/config.toml` (read-only, if exists)
 - **Git** — `~/.gitconfig` (read-only, requires both `command -v git` and file existence)
 - **Mise** — `~/.config/mise`, `~/.local/share/mise`, `~/.cache/mise` (read-only, if exists, subject to sensitive path filtering)
