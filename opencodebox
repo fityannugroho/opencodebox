@@ -349,9 +349,6 @@ declare -a BWRAP_ARGS=(
 
     # --- OpenCode Binary ---
     --bind "$OPCODE_DIR" /opt/opencode
-
-    # --- Environment Setup ---
-    --setenv PATH "/usr/bin:/bin:/opt/opencode:$HOME/.local/bin"
 )
 
 # Add seccomp filter to bwrap arguments if available
