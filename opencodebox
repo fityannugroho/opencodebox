@@ -319,6 +319,9 @@ declare -a BWRAP_ARGS=(
     --ro-bind /etc/ssl /etc/ssl
     --ro-bind /etc/ca-certificates /etc/ca-certificates
 
+    # --- Alternatives (managed by update-alternatives) ---
+    --ro-bind /etc/alternatives /etc/alternatives
+
     # --- Minimal User Identity ---
     --file "$PASSWD_FD" /etc/passwd
     --file "$GROUP_FD" /etc/group

@@ -92,6 +92,7 @@ opencodebox --with /data --with-ro /config serve
 
 **Read-Only:**
 - `/usr` - System basics
+- `/etc/alternatives` - System alternatives (managed by update-alternatives)
 - `$HOME/.local` - User local data (except keyrings/tool data)
 - `$HOME/.cache/opencode` - OpenCode cache
 - `$HOME/.ssh/*.pub` - Sanitized OpenSSH public key material, when `$HOME/.ssh` is not a symlink
