@@ -6,7 +6,7 @@
 # https://github.com/fityannugroho/opencodebox
 # ============================================================
 
-VERSION="0.4.1"
+VERSION="0.4.2"
 
 print_version() {
     echo "opencode v$(opencode --version)"
