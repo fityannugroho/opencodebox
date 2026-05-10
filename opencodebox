@@ -285,6 +285,7 @@ fi
 APP_DATA="$HOME/.local/share/opencode"
 CONFIG_DIR="$HOME/.config/opencode"
 AGENTS_DIR="$HOME/.agents"
+CACHE_DIR="$HOME/.cache/opencode"
 
 # Locate opencode binary
 OPCODE_PATH=$(command -v opencode)
@@ -329,6 +330,7 @@ declare -a BWRAP_ARGS=(
     # --- OpenCode Specific (read-only) ---
     --ro-bind "$CONFIG_DIR" "$CONFIG_DIR"
     --ro-bind "$AGENTS_DIR" "$AGENTS_DIR"
+    --ro-bind "$CACHE_DIR" "$CACHE_DIR"
 
     # --- Read-Write Bindings ---
     --bind "$PROJECT_DIR" "$PROJECT_DIR"    # Current project (read-write)
@@ -338,6 +340,7 @@ declare -a BWRAP_ARGS=(
     --bind "$OPCODE_DIR" /opt/opencode
 )
 
+# Private keyring (unmount if present)
 [[ -d "$HOME/.local/share/keyrings" ]] && BWRAP_ARGS+=(--tmpfs "$HOME/.local/share/keyrings")
 
 # Add seccomp filter to bwrap arguments if available

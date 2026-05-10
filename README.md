@@ -93,6 +93,7 @@ opencodebox --with /data --with-ro /config serve
 **Read-Only:**
 - `/usr` - System basics
 - `$HOME/.local` - User local data (except keyrings/tool data)
+- `$HOME/.cache/opencode` - OpenCode cache
 - `$HOME/.ssh/*.pub` - Sanitized OpenSSH public key material, when `$HOME/.ssh` is not a symlink
 - `$HOME/.ssh/known_hosts*` - SSH host keys, read-only, for Git-over-SSH host verification
 - `gpg.ssh.allowedSignersFile` - Configured SSH allowed signers file (if configured)
