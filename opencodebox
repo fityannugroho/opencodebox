@@ -322,17 +322,20 @@ declare -a BWRAP_ARGS=(
     --file "$PASSWD_FD" /etc/passwd
     --file "$GROUP_FD" /etc/group
 
-    # --- User Local Data (read-only except keyrings) ---
+    # --- User Local Data ---
     --ro-bind "$HOME/.local" "$HOME/.local"
     --tmpfs "$HOME/.local/share/keyrings"    # Private keyring (no host access)
-    --ro-bind "$HOME/.cache" "$HOME/.cache"
+    --tmpfs "$HOME/.local/share/pnpm/store"  # Writable pnpm store (prevents hardlink errors)
+    --tmpfs "$HOME/.local/share/virtualenvs"  # Writable pipenv virtualenvs
+    --tmpfs "$HOME/.cache"                   # Writable cache (universal for uv, cargo, etc.)
 
-    # --- Language Runtimes (read-only) ---
+    # --- Language Runtimes ---
     --ro-bind "$HOME/.bun" "$HOME/.bun"
-    --ro-bind "$HOME/.npm" "$HOME/.npm"
+    --tmpfs "$HOME/.bun/install/cache"       # Writable bun cache (prevents install failures)
+    --tmpfs "$HOME/.npm"                     # Writable npm cache
     --ro-bind "$HOME/.rustup" "$HOME/.rustup"
     --ro-bind "$HOME/.cargo/bin" "$HOME/.cargo/bin"
-    --ro-bind "$HOME/.cargo/registry" "$HOME/.cargo/registry"
+    --tmpfs "$HOME/.cargo/registry"          # Writable cargo registry
 
     # --- Tool Configurations (read-only) ---
     --ro-bind "$HOME/.config/pnpm" "$HOME/.config/pnpm"
@@ -415,6 +418,16 @@ if [[ -n "${SSH_AUTH_SOCK:-}" && "$SSH_AUTH_SOCK" == /* && -S "$SSH_AUTH_SOCK" ]
     BWRAP_ARGS+=(--setenv SSH_AUTH_SOCK "$SSH_AUTH_SOCK")
 else
     BWRAP_ARGS+=(--unsetenv SSH_AUTH_SOCK)
+fi
+
+# --- Tool Config Files (read-only, conditional) ---
+# npm config: registry, proxy, etc.
+if [[ -f "$HOME/.npmrc" ]]; then
+    BWRAP_ARGS+=(--ro-bind "$HOME/.npmrc" "$HOME/.npmrc")
+fi
+# Cargo config: registry mirrors, proxy, etc.
+if [[ -f "$HOME/.cargo/config.toml" ]]; then
+    BWRAP_ARGS+=(--ro-bind "$HOME/.cargo/config.toml" "$HOME/.cargo/config.toml")
 fi
 
 # Conditionally bind mise directories if exists on host
