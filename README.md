@@ -83,25 +83,40 @@ opencodebox --with /data --with-ro /config serve
    - Validates `~/.ssh` directory permissions (must be `0700`)
 5. Build bubblewrap sandbox with namespace isolation and bind mounts
 6. Setup SSH (sanitized `.pub` keys, `known_hosts`, agent forwarding)
-7. Add mise integration and extra bind mounts
+7. Add conditional tool mounts (bun, npm, pnpm, uv, cargo, git, mise) and extra bind mounts
 8. Execute opencode inside the sandbox
 
 ## Bind Mounts Structure
 
-### Read-Only (Default)
+### Unconditional Mounts (Always Present)
+
+**Read-Only:**
 - `/usr` - System basics
-- `$HOME/.local` - User local data (except keyrings)
-- `$HOME/.cache` - Cache
+- `$HOME/.local` - User local data (except keyrings/tool data)
 - `$HOME/.ssh/*.pub` - Sanitized OpenSSH public key material, when `$HOME/.ssh` is not a symlink
 - `$HOME/.ssh/known_hosts*` - SSH host keys, read-only, for Git-over-SSH host verification
-- `gpg.ssh.allowedSignersFile` - Configured SSH allowed signers file, read-only, for local signature verification
-- Language runtimes: `.bun`, `.npm`, `.rustup`, `.cargo`
-- Configs: `pnpm`, `uv`, `gitconfig`
+- `gpg.ssh.allowedSignersFile` - Configured SSH allowed signers file (if configured)
 - OpenCode: `.config/opencode`, `.agents`
 
-### Read-Write
+**Read-Write:**
 - Current project directory (`$PWD`)
 - `$HOME/.local/share/opencode` - OpenCode application data
+
+**Tmpfs (Private, writable per-session):**
+- `$HOME/.cache` - Universal cache
+- `$HOME/.local/share/keyrings` - Private keyring
+
+### Conditional Tool Mounts (Requires Tool Installed on Host)
+
+Each tool is mounted only when `command -v <tool>` succeeds on the host. If the tool is not installed, none of its directories are bound into the sandbox.
+
+- **Bun** — `~/.bun` (read-only) + `~/.bun/install/cache` (tmpfs)
+- **npm** — `~/.npm` (tmpfs) + `~/.npmrc` (read-only, if exists)
+- **pnpm** — `~/.config/pnpm` (read-only, if exists) + `~/.local/share/pnpm/store` (tmpfs)
+- **uv** — `~/.config/uv` (read-only, if exists)
+- **Rust/Cargo** — `~/.rustup`, `~/.cargo/bin` (read-only, if exists) + `~/.cargo/registry` (tmpfs) + `~/.cargo/config.toml` (read-only, if exists)
+- **Git** — `~/.gitconfig` (read-only, requires both `command -v git` and file existence)
+- **Mise** — `~/.config/mise`, `~/.local/share/mise`, `~/.cache/mise` (read-only, if exists, subject to sensitive path filtering)
 
 ## Security Restrictions
 

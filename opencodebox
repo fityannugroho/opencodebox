@@ -325,22 +325,7 @@ declare -a BWRAP_ARGS=(
     # --- User Local Data ---
     --ro-bind "$HOME/.local" "$HOME/.local"
     --tmpfs "$HOME/.local/share/keyrings"    # Private keyring (no host access)
-    --tmpfs "$HOME/.local/share/pnpm/store"  # Writable pnpm store (prevents hardlink errors)
-    --tmpfs "$HOME/.local/share/virtualenvs"  # Writable pipenv virtualenvs
     --tmpfs "$HOME/.cache"                   # Writable cache (universal for uv, cargo, etc.)
-
-    # --- Language Runtimes ---
-    --ro-bind "$HOME/.bun" "$HOME/.bun"
-    --tmpfs "$HOME/.bun/install/cache"       # Writable bun cache (prevents install failures)
-    --tmpfs "$HOME/.npm"                     # Writable npm cache
-    --ro-bind "$HOME/.rustup" "$HOME/.rustup"
-    --ro-bind "$HOME/.cargo/bin" "$HOME/.cargo/bin"
-    --tmpfs "$HOME/.cargo/registry"          # Writable cargo registry
-
-    # --- Tool Configurations (read-only) ---
-    --ro-bind "$HOME/.config/pnpm" "$HOME/.config/pnpm"
-    --ro-bind "$HOME/.config/uv" "$HOME/.config/uv"
-    --ro-bind "$HOME/.gitconfig" "$HOME/.gitconfig"
 
     # --- OpenCode Specific (read-only) ---
     --ro-bind "$CONFIG_DIR" "$CONFIG_DIR"
@@ -420,41 +405,72 @@ else
     BWRAP_ARGS+=(--unsetenv SSH_AUTH_SOCK)
 fi
 
-# --- Tool Config Files (read-only, conditional) ---
-# npm config: registry, proxy, etc.
-if [[ -f "$HOME/.npmrc" ]]; then
-    BWRAP_ARGS+=(--ro-bind "$HOME/.npmrc" "$HOME/.npmrc")
-fi
-# Cargo config: registry mirrors, proxy, etc.
-if [[ -f "$HOME/.cargo/config.toml" ]]; then
-    BWRAP_ARGS+=(--ro-bind "$HOME/.cargo/config.toml" "$HOME/.cargo/config.toml")
+# --- Conditional Tool Mounts ---
+# Each block guards behind command -v, then checks path existence.
+
+# Bun
+if command -v bun >/dev/null 2>&1; then
+    [[ -d "$HOME/.bun" ]] && BWRAP_ARGS+=(--ro-bind "$HOME/.bun" "$HOME/.bun")
+    BWRAP_ARGS+=(--tmpfs "$HOME/.bun/install/cache")
 fi
 
-# Conditionally bind mise directories if exists on host
-# Binary available via /usr or $HOME/.local bind
-# Respect MISE_* environment variables
-MISE_CONFIG_DIR="${MISE_CONFIG_DIR:-$HOME/.config/mise}"
-MISE_DATA_DIR="${MISE_DATA_DIR:-$HOME/.local/share/mise}"
-MISE_CACHE_DIR="${MISE_CACHE_DIR:-$HOME/.cache/mise}"
+# npm
+if command -v npm >/dev/null 2>&1; then
+    BWRAP_ARGS+=(--tmpfs "$HOME/.npm")
+    [[ -f "$HOME/.npmrc" ]] && BWRAP_ARGS+=(--ro-bind "$HOME/.npmrc" "$HOME/.npmrc")
+fi
 
-for dir in "$MISE_CONFIG_DIR" "$MISE_DATA_DIR" "$MISE_CACHE_DIR"; do
-    if [[ -d "$dir" ]]; then
-        # Prevent binding sensitive directories or their ancestors
-        if is_sensitive_path "$dir"; then
-            echo "Warning: MISE directory '$dir' points to or encloses a sensitive location. Skipping bind." >&2
-            continue
+# pnpm
+if command -v pnpm >/dev/null 2>&1; then
+    [[ -d "$HOME/.config/pnpm" ]] && BWRAP_ARGS+=(--ro-bind "$HOME/.config/pnpm" "$HOME/.config/pnpm")
+    BWRAP_ARGS+=(--tmpfs "$HOME/.local/share/pnpm/store")
+fi
+
+# uv
+if command -v uv >/dev/null 2>&1; then
+    [[ -d "$HOME/.config/uv" ]] && BWRAP_ARGS+=(--ro-bind "$HOME/.config/uv" "$HOME/.config/uv")
+fi
+
+# Rust / Cargo
+if command -v cargo >/dev/null 2>&1; then
+    [[ -d "$HOME/.rustup" ]] && BWRAP_ARGS+=(--ro-bind "$HOME/.rustup" "$HOME/.rustup")
+    [[ -d "$HOME/.cargo/bin" ]] && BWRAP_ARGS+=(--ro-bind "$HOME/.cargo/bin" "$HOME/.cargo/bin")
+    BWRAP_ARGS+=(--tmpfs "$HOME/.cargo/registry")
+    [[ -f "$HOME/.cargo/config.toml" ]] && BWRAP_ARGS+=(--ro-bind "$HOME/.cargo/config.toml" "$HOME/.cargo/config.toml")
+fi
+
+# Git config
+if command -v git >/dev/null 2>&1 && [[ -f "$HOME/.gitconfig" ]]; then
+    BWRAP_ARGS+=(--ro-bind "$HOME/.gitconfig" "$HOME/.gitconfig")
+fi
+
+# Mise
+mise_installed=false
+if command -v mise >/dev/null 2>&1; then
+    mise_installed=true
+    MISE_CONFIG_DIR="${MISE_CONFIG_DIR:-$HOME/.config/mise}"
+    MISE_DATA_DIR="${MISE_DATA_DIR:-$HOME/.local/share/mise}"
+    MISE_CACHE_DIR="${MISE_CACHE_DIR:-$HOME/.cache/mise}"
+    for dir in "$MISE_CONFIG_DIR" "$MISE_DATA_DIR" "$MISE_CACHE_DIR"; do
+        if [[ -d "$dir" ]]; then
+            if is_sensitive_path "$dir"; then
+                echo "Warning: MISE directory '$dir' points to or encloses a sensitive location. Skipping bind." >&2
+                continue
+            fi
+            BWRAP_ARGS+=("--ro-bind" "$dir" "$dir")
         fi
-        BWRAP_ARGS+=("--ro-bind" "$dir" "$dir")
-    fi
-done
+    done
+fi
 
 # Add extra binds from --with/--with-ro last so user choices have highest priority.
 BWRAP_ARGS+=("${EXTRA_BINDS[@]}")
 
 # Execute bwrap with all arguments and the target command
-# mise activation is optional - fails silently if not available
+# mise activation runs inside sandbox only if host has mise installed
 exec bwrap "${BWRAP_ARGS[@]}" -- \
     bash -c '
-        command -v mise >/dev/null 2>&1 && eval "$(mise activate bash)"
+        if [ "'"$mise_installed"'" = true ]; then
+            eval "$(mise activate bash)"
+        fi
         exec /opt/opencode/opencode "$@"
     ' -- "$@"
