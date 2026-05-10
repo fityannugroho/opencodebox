@@ -104,18 +104,18 @@ opencodebox --with /data --with-ro /config serve
 
 **Tmpfs (Private, writable per-session):**
 - `$HOME/.cache` - Universal cache
-- `$HOME/.local/share/keyrings` - Private keyring
+- `$HOME/.local/share/keyrings` - Private keyring, if exists
 
 ### Conditional Tool Mounts (Requires Tool Installed on Host)
 
 Each tool is mounted only when `command -v <tool>` succeeds on the host. If the tool is not installed, none of its directories are bound into the sandbox.
 
-- **Bun** — `~/.bun` (read-only) + `~/.bun/install/cache` (tmpfs)
-- **npm** — `~/.npm` (tmpfs) + `~/.npmrc` (read-only, if exists)
-- **pnpm** — `~/.config/pnpm` (read-only, if exists) + `~/.local/share/pnpm/store` (tmpfs)
+- **Bun** — `~/.bun` (read-only, if exists) + `~/.bun/install/cache` (tmpfs, if exists)
+- **npm** — `~/.npm` (tmpfs, if exists) + `~/.npmrc` (read-only, if exists)
+- **pnpm** — `~/.config/pnpm` (read-only, if exists) + `~/.local/share/pnpm/store` (tmpfs, if exists)
 - **uv** — `~/.config/uv` (read-only, if exists)
-- **pipenv** — `~/.local/share/virtualenvs` (tmpfs, centralized store)
-- **Rust/Cargo** — `~/.rustup`, `~/.cargo/bin` (read-only, if exists) + `~/.cargo/registry` (tmpfs) + `~/.cargo/config.toml` (read-only, if exists)
+- **pipenv** — `~/.local/share/virtualenvs` (tmpfs, if exists, centralized store)
+- **Rust/Cargo** — `~/.rustup`, `~/.cargo/bin` (read-only, if exists) + `~/.cargo/registry` (tmpfs, if exists) + `~/.cargo/config.toml` (read-only, if exists)
 - **Git** — `~/.gitconfig` (read-only, requires both `command -v git` and file existence)
 - **Mise** — `~/.config/mise`, `~/.local/share/mise`, `~/.cache/mise` (read-only, if exists, subject to sensitive path filtering)
 

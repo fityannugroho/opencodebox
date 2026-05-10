@@ -324,7 +324,6 @@ declare -a BWRAP_ARGS=(
 
     # --- User Local Data ---
     --ro-bind "$HOME/.local" "$HOME/.local"
-    --tmpfs "$HOME/.local/share/keyrings"    # Private keyring (no host access)
     --tmpfs "$HOME/.cache"                   # Writable cache (universal for uv, cargo, etc.)
 
     # --- OpenCode Specific (read-only) ---
@@ -338,6 +337,8 @@ declare -a BWRAP_ARGS=(
     # --- OpenCode Binary ---
     --bind "$OPCODE_DIR" /opt/opencode
 )
+
+[[ -d "$HOME/.local/share/keyrings" ]] && BWRAP_ARGS+=(--tmpfs "$HOME/.local/share/keyrings")
 
 # Add seccomp filter to bwrap arguments if available
 if [[ -n "$SECCOMP_FD" ]]; then
@@ -411,19 +412,19 @@ fi
 # Bun
 if command -v bun >/dev/null 2>&1; then
     [[ -d "$HOME/.bun" ]] && BWRAP_ARGS+=(--ro-bind "$HOME/.bun" "$HOME/.bun")
-    BWRAP_ARGS+=(--tmpfs "$HOME/.bun/install/cache")
+    [[ -d "$HOME/.bun/install/cache" ]] && BWRAP_ARGS+=(--tmpfs "$HOME/.bun/install/cache")
 fi
 
 # npm
 if command -v npm >/dev/null 2>&1; then
-    BWRAP_ARGS+=(--tmpfs "$HOME/.npm")
+    [[ -d "$HOME/.npm" ]] && BWRAP_ARGS+=(--tmpfs "$HOME/.npm")
     [[ -f "$HOME/.npmrc" ]] && BWRAP_ARGS+=(--ro-bind "$HOME/.npmrc" "$HOME/.npmrc")
 fi
 
 # pnpm
 if command -v pnpm >/dev/null 2>&1; then
     [[ -d "$HOME/.config/pnpm" ]] && BWRAP_ARGS+=(--ro-bind "$HOME/.config/pnpm" "$HOME/.config/pnpm")
-    BWRAP_ARGS+=(--tmpfs "$HOME/.local/share/pnpm/store")
+    [[ -d "$HOME/.local/share/pnpm/store" ]] && BWRAP_ARGS+=(--tmpfs "$HOME/.local/share/pnpm/store")
 fi
 
 # uv
@@ -440,7 +441,7 @@ fi
 if command -v cargo >/dev/null 2>&1; then
     [[ -d "$HOME/.rustup" ]] && BWRAP_ARGS+=(--ro-bind "$HOME/.rustup" "$HOME/.rustup")
     [[ -d "$HOME/.cargo/bin" ]] && BWRAP_ARGS+=(--ro-bind "$HOME/.cargo/bin" "$HOME/.cargo/bin")
-    BWRAP_ARGS+=(--tmpfs "$HOME/.cargo/registry")
+    [[ -d "$HOME/.cargo/registry" ]] && BWRAP_ARGS+=(--tmpfs "$HOME/.cargo/registry")
     [[ -f "$HOME/.cargo/config.toml" ]] && BWRAP_ARGS+=(--ro-bind "$HOME/.cargo/config.toml" "$HOME/.cargo/config.toml")
 fi
 
