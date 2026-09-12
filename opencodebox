@@ -24,10 +24,13 @@ Usage:
 Options:
   --with /host[:/sandbox]      Bind host path read-write (sandbox path defaults to host path)
   --with-ro /host[:/sandbox]   Bind host path read-only (sandbox path defaults to host path)
+  --persistent-tmp            Keep /tmp in .opencodebox-tmp in the launch directory
+  --podman                    Forward the host rootless Podman socket (grants host-user access)
   --version, -v                Show version information
   --help, -h                   Show this help message
 
 Examples:
+  opencodebox --persistent-tmp --podman -s SESSION_ID
   opencodebox --with ../app-backend
   opencodebox --with /mnt/data:/workspace/data
   opencodebox --with-ro /etc/hosts
@@ -130,6 +133,8 @@ sanitize_ssh_public_key_file() {
 # These allow users to bind additional paths into the sandbox
 declare -a EXTRA_BINDS=()
 declare -a REMAINING_ARGS=()
+PODMAN_ENABLED=false
+PERSISTENT_TMP_ENABLED=false
 
 add_readonly_regular_file() {
     local file="$1"
@@ -216,6 +221,14 @@ while [[ $# -gt 0 ]]; do
             parse_bind_arg "--ro-bind" "$1"
             shift
             ;;
+        --persistent-tmp)
+            PERSISTENT_TMP_ENABLED=true
+            shift
+            ;;
+        --podman)
+            PODMAN_ENABLED=true
+            shift
+            ;;
         # Pass through all other args to opencode
         *)
             REMAINING_ARGS+=("$1")
@@ -225,6 +238,36 @@ while [[ $# -gt 0 ]]; do
 done
 
 check_prerequisites
+
+# Explicit delegation to the host user's rootless container service. Do not
+# start services, forward rootful endpoints, or initialize a nested runtime.
+PODMAN_SOCKET=""
+if [[ "$PODMAN_ENABLED" == true ]]; then
+    PODMAN_UID="$(id -u)"
+    if [[ "$PODMAN_UID" == 0 ]]; then
+        echo "Error: --podman supports only a non-root user's rootless Podman socket." >&2
+        exit 1
+    fi
+    if ! command -v podman >/dev/null 2>&1; then
+        echo "Error: --podman requires the podman client installed and available in the sandbox (for example, /usr/bin/podman)." >&2
+        exit 1
+    fi
+    PODMAN_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$PODMAN_UID}"
+    if [[ "$PODMAN_RUNTIME_DIR" != /* ]]; then
+        echo "Error: --podman requires an absolute XDG_RUNTIME_DIR." >&2
+        exit 1
+    fi
+    PODMAN_SOCKET_PATH="$PODMAN_RUNTIME_DIR/podman/podman.sock"
+    if ! PODMAN_SOCKET="$(realpath -e "$PODMAN_SOCKET_PATH" 2>/dev/null)" || [[ ! -S "$PODMAN_SOCKET" ]]; then
+        echo "Error: --podman requires a Unix socket at $PODMAN_SOCKET_PATH." >&2
+        echo "Start the rootless service outside opencodebox: systemctl --user start podman.socket" >&2
+        exit 1
+    fi
+    if [[ "$(stat -L -c '%u' "$PODMAN_SOCKET" 2>/dev/null)" != "$PODMAN_UID" ]]; then
+        echo "Error: --podman socket must be owned by the current user (UID $PODMAN_UID)." >&2
+        exit 1
+    fi
+fi
 
 # Seccomp BPF filter loading
 SECCOMP_FD=""
@@ -281,6 +324,37 @@ if is_sensitive_path "$PROJECT_DIR"; then
     exit 1
 fi
 
+# Keep the default private tmpfs unless explicitly opted into disk-backed /tmp.
+# Use the launch directory, not any project/session argument passed to OpenCode.
+# Never chmod, remove, or follow an existing unsafe destination.
+declare -a TMP_MOUNT_ARGS=(--tmpfs /tmp)
+if [[ "$PERSISTENT_TMP_ENABLED" == true ]]; then
+    PERSISTENT_TMP_DIR="$PROJECT_DIR/.opencodebox-tmp"
+    if [[ -L "$PERSISTENT_TMP_DIR" ]]; then
+        echo "Error: --persistent-tmp refuses symlink '$PERSISTENT_TMP_DIR'." >&2
+        exit 1
+    fi
+    if [[ ! -e "$PERSISTENT_TMP_DIR" ]]; then
+        if ! mkdir -m 700 -- "$PERSISTENT_TMP_DIR"; then
+            echo "Error: --persistent-tmp cannot create '$PERSISTENT_TMP_DIR'." >&2
+            exit 1
+        fi
+    fi
+    if [[ -L "$PERSISTENT_TMP_DIR" || ! -d "$PERSISTENT_TMP_DIR" ]]; then
+        echo "Error: --persistent-tmp requires a non-symlink directory at '$PERSISTENT_TMP_DIR'." >&2
+        exit 1
+    fi
+    if [[ "$(stat -c '%u' "$PERSISTENT_TMP_DIR" 2>/dev/null)" != "$USER_ID" ]]; then
+        echo "Error: --persistent-tmp directory must be owned by the current user (UID $USER_ID)." >&2
+        exit 1
+    fi
+    if [[ "$(stat -c '%a' "$PERSISTENT_TMP_DIR" 2>/dev/null)" != 700 ]]; then
+        echo "Error: --persistent-tmp directory '$PERSISTENT_TMP_DIR' must have permissions 0700. Inspect it and correct its permissions before retrying." >&2
+        exit 1
+    fi
+    TMP_MOUNT_ARGS=(--bind "$PERSISTENT_TMP_DIR" /tmp)
+fi
+
 # Define paths for persistent data storage
 APP_DATA="$HOME/.local/share/opencode"
 CONFIG_DIR="$HOME/.config/opencode"
@@ -303,7 +377,7 @@ declare -a BWRAP_ARGS=(
     # --- Core System Resources ---
     --dev /dev           # Device nodes (null, zero, random, etc.)
     --proc /proc         # Process information filesystem
-    --tmpfs /tmp         # Private temp directory
+    "${TMP_MOUNT_ARGS[@]}" # Private tmpfs or opt-in persistent project directory
 
     # --- Read-Only System Root ---
     # Bind entire /usr read-only, symlink standard directories
@@ -420,6 +494,16 @@ if [[ -n "${SSH_AUTH_SOCK:-}" && "$SSH_AUTH_SOCK" == /* && -S "$SSH_AUTH_SOCK" ]
     BWRAP_ARGS+=(--setenv SSH_AUTH_SOCK "$SSH_AUTH_SOCK")
 else
     BWRAP_ARGS+=(--unsetenv SSH_AUTH_SOCK)
+fi
+
+# Forward only the opted-in API socket; the host service runs the containers.
+# A read-only socket bind would NOT restrict API operations.
+if [[ "$PODMAN_ENABLED" == true ]]; then
+    BWRAP_ARGS+=(--dir /run --dir /run/opencodebox)
+    BWRAP_ARGS+=(--bind "$PODMAN_SOCKET" /run/opencodebox/podman.sock)
+    BWRAP_ARGS+=(--unsetenv CONTAINER_CONNECTION)
+    BWRAP_ARGS+=(--setenv CONTAINER_HOST unix:///run/opencodebox/podman.sock)
+    echo "Warning: --podman grants sandboxed processes access to your host user's Podman service, including host file mounts." >&2
 fi
 
 # --- Conditional Tool Mounts ---

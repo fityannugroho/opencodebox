@@ -8,8 +8,10 @@ Run OpenCode inside a bubblewrap sandbox for security isolation.
 
 - **Process Isolation**: Uses unshare PID, IPC, and UTS namespaces
 - **Controlled Filesystem**: Most system filesystem mounted read-only
+- **Persistent Temporary Storage (Opt-In)**: Keep `/tmp` in the launch directory with `--persistent-tmp`
 - **Custom Bind Mounts**: Add read-write or read-only access with `--with` and `--with-ro`
 - **Mise Support**: Integrated with [mise](https://mise.jdx.dev) for tool management
+- **Rootless Podman (Opt-In)**: Use the host container service with `--podman` (grants host-user container access)
 - **SSH Agent Forwarding**: Supports SSH commit signing through the host `ssh-agent`
 - **Seccomp Sandbox Filter**: Mitigates kernel privilege escalation vulnerabilities (see [details](#seccomp-sandbox-filter))
 
@@ -36,7 +38,7 @@ opencodebox --version
 
 ## Usage
 
-`opencodebox` is a wrapper for the `opencode` command. All arguments are passed through to `opencode` inside the sandbox.
+`opencodebox` is a wrapper for the `opencode` command. Arguments other than wrapper options are passed through to `opencode` inside the sandbox.
 
 ```bash
 opencodebox [OPTIONS] [OPENCODE_ARGS...]
@@ -51,7 +53,10 @@ opencodebox [OPTIONS] [OPENCODE_ARGS...]
 - `--with /host[:/sandbox]` - Bind host path read-write to sandbox
 - `--with-ro /host[:/sandbox]` - Bind host path read-only to sandbox
 
-These options allow you to specify additional directories to mount inside the sandbox for read-write or read-only access.
+`--with` and `--with-ro` accept additional paths (directories, files, or sockets).
+
+- `--persistent-tmp` - Mount `.opencodebox-tmp` in the launch directory at `/tmp`; see [persistent temporary storage](#persistent-temporary-storage-opt-in).
+- `--podman` - Forward the current user's rootless Podman API socket; see [Podman support](#podman-support-opt-in) for setup and security implications.
 
 ### Examples
 
@@ -74,7 +79,7 @@ opencodebox --with /data --with-ro /config serve
 
 ## How It Works
 
-1. Parse arguments (`--with`, `--with-ro`, `--version`, `--help`)
+1. Parse arguments (`--with`, `--with-ro`, `--podman`, `--persistent-tmp`, `--version`, `--help`)
 2. Check prerequisites (bwrap and opencode)
 3. Load seccomp sandbox filter (see [details](#seccomp-sandbox-filter))
 4. **Enforce security restrictions**:
@@ -87,6 +92,8 @@ opencodebox --with /data --with-ro /config serve
 8. Execute opencode inside the sandbox
 
 ## Bind Mounts Structure
+
+> **Optional system paths:** System mounts marked “if present” use bubblewrap’s `--ro-bind-try`: they are mounted read-only when available and skipped when absent. This accommodates differences between Linux distributions. It is an internal bubblewrap option, not an opencodebox command-line option.
 
 ### Unconditional Mounts (Always Present)
 
@@ -110,7 +117,7 @@ opencodebox --with /data --with-ro /config serve
 - `$HOME/.local/share/opencode` - OpenCode application data
 
 **Tmpfs (Private, writable per-session):**
-- `/tmp` - Temporary files
+- `/tmp` - Temporary files (default; replaced by a persistent bind with `--persistent-tmp`)
 - `$HOME/.cache` - Universal cache
 - `$HOME/.local/share/keyrings` - Exclude private keyring (if exists on host)
 
@@ -136,6 +143,131 @@ Each tool is mounted only when `command -v <tool>` succeeds on the host. If the 
 - **Project directory**: Cannot run from `$HOME`, `~/.ssh`, `~/.gnupg`, or their ancestors. Use a dedicated project directory.
 - **Bind mounts**: `--with` and `--with-ro` reject paths that point to or enclose sensitive locations (`$HOME`, `~/.ssh`, `~/.gnupg`).
 - **SSH directory**: `~/.ssh` must have permissions `0700`. Fix with: `chmod 700 ~/.ssh`
+
+## Persistent Temporary Storage (Opt-In)
+
+By default, `/tmp` is a private tmpfs discarded when the sandbox exits. To keep
+its contents across launches, run:
+
+```bash
+opencodebox --persistent-tmp
+# Can be combined with Podman and session resume:
+opencodebox --persistent-tmp --podman -s SESSION_ID
+```
+
+The launcher creates **`.opencodebox-tmp` in the directory from which you launch
+opencodebox** and bind-mounts it read-write at `/tmp`. For example, launching from
+`/home/jgf/git/my-project` stores `/tmp/example.txt` at
+`/home/jgf/git/my-project/.opencodebox-tmp/example.txt` on the host. It is not
+created beside the script unless that is also your launch directory. Resuming a
+session or passing a different project argument to OpenCode does not change the
+storage location selected by the wrapper.
+
+- The directory is created with mode **0700** and reused on later launches.
+  Existing paths must be non-symlink directories owned by your user with mode
+  0700. Unsafe paths are rejected, not deleted or silently changed. These are
+  startup checks, not protection against a concurrent process with your user's
+  access replacing files in the project.
+- Contents are **not automatically cleaned**. Temporary credentials, downloads,
+  stale sockets, lock files, and application data may remain. Review and clean
+  the directory manually when no sessions are using it. It consumes space on
+  the launch directory's filesystem rather than a new tmpfs; it is only as
+  durable as that underlying filesystem.
+- Sessions launched from the same directory with this flag **share `/tmp`**.
+  They are not isolated from one another's temporary files and may encounter
+  name or lock conflicts. Mode 0700 is intended for the invoking user, not a
+  multi-user `/tmp` shared by processes running under other UIDs.
+- Add `.opencodebox-tmp/` to your project's `.gitignore` (or local
+  `.git/info/exclude`) and exclude it from build contexts/backups as appropriate.
+  The launcher does not edit your project's ignore files. This repository
+  already ignores the directory.
+- Without the flag, `/tmp` remains ephemeral and any existing persistent
+  directory is left untouched. Because the project itself is mounted, that
+  directory is still accessible at its project path; this flag is a storage
+  choice, not a confidentiality boundary.
+- Explicit `--with`/`--with-ro` mounts still take precedence. Avoid overriding
+  `/tmp` if you want this storage mapping to remain in effect.
+- With `--podman`, container bind-mount sources still use **host paths**. Use the
+  full host path to `.opencodebox-tmp`, not `/tmp`, when sharing these files with
+  a container through the host service.
+
+Restart using the updated launcher to enable the mount. This does not migrate
+files from an already-running sandbox's ephemeral `/tmp`.
+
+## Podman Support (Opt-In)
+
+`--podman` lets the Podman CLI use a **host rootless Podman service**. It does
+not run a container runtime inside bubblewrap or weaken the local seccomp,
+capability, or device restrictions. Install the `podman` client in a location
+visible inside the sandbox (normally `/usr/bin/podman`).
+
+### Host setup and launch
+
+Run these commands **outside opencodebox**, as your normal non-root user:
+
+```bash
+systemctl --user start podman.socket
+# Optional: enable socket activation for future user sessions
+systemctl --user enable podman.socket
+
+# From the project directory, using the updated launcher:
+opencodebox --podman
+# Or resume an existing OpenCode session:
+opencodebox --podman -s SESSION_ID
+```
+
+When testing a repository checkout before installing it, use `./opencodebox`
+instead of the installed `opencodebox` command. Restart the sandbox to add this
+mount; changing the launcher cannot add it to an existing session.
+
+The launcher discovers `${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock`,
+resolves its path, and requires a Unix socket owned by the invoking non-root
+user. It fails with setup instructions if the socket is missing; it never starts
+host services automatically. Socket validation checks type/ownership, not service
+health or authenticity. If the service is unavailable, Podman will report the
+connection error. The host service must actually be configured rootless.
+
+Only the socket is bound to `/run/opencodebox/podman.sock`. The launcher sets
+`CONTAINER_HOST=unix:///run/opencodebox/podman.sock` and unsets
+`CONTAINER_CONNECTION` so an inherited named connection does not override the
+selected endpoint. Ordinary `podman` commands then use remote mode. Without
+`--podman`, no Podman-specific mounts or environment changes are added.
+User-supplied `--with` mounts still take precedence; avoid overriding `/run`,
+`/run/opencodebox`, or the socket destination when using this feature.
+
+### Verify inside the new sandbox
+
+```bash
+podman info
+podman run --rm docker.io/library/alpine:latest id
+```
+
+The second command downloads an image if necessary and runs a disposable
+container through the host service. Docker API clients, Compose providers,
+custom endpoints, and nested/local Podman are not configured by this option.
+`DOCKER_HOST` is not set.
+
+### Security, paths, and cleanup
+
+> **Warning:** This is explicit delegation of host-user container execution,
+> not project-confined access. Processes in the sandbox can use the service to
+> start containers with bind mounts of other host files accessible to your user,
+> including files normally hidden by opencodebox. Rootless does not mean confined
+> to the workspace. Use a dedicated restricted account or VM if that boundary
+> must remain intact. A read-only socket mount would not make the API read-only.
+
+- Root invocation is rejected; the rootful `/run/podman/podman.sock` endpoint is
+  not selected. Do not manually forward a rootful service as a workaround.
+- Container bind-mount source paths are resolved on the **host**. Same-path
+  project mounts work naturally; sandbox-only aliases and private `/tmp` files
+  are not automatically available to the service. Build contexts and copy
+  commands have their own remote-transfer semantics.
+- Containers run outside bubblewrap's process tree and do not inherit its
+  seccomp policy or teardown lifecycle. They may outlive OpenCode. Use `--rm`
+  where appropriate and explicitly stop/remove long-lived containers.
+- Host ports and container storage are managed by the host service.
+- Restart the sandbox if the host service socket is replaced; a bind of the old
+  socket may no longer reach the new listener.
 
 ## SSH Agent and Git Signing
 
@@ -177,6 +309,18 @@ The filter is automatically applied if the corresponding `.bpf` file is availabl
 - [AWS Security Bulletin — 2026-027](https://aws.amazon.com/security/security-bulletins/2026-027-aws/)
 
 ## Development
+
+Run launcher regression tests (Python 3 standard library; no Podman service or
+container downloads required):
+
+```bash
+bash -n opencodebox
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -v
+```
+
+The tests use isolated temporary homes, real temporary Unix sockets, and mocked
+commands to inspect launcher arguments. A live service/container smoke test must
+still be run after launching with `--podman` as described above.
 
 To generate the seccomp BPF filter files (`.bpf`):
 
