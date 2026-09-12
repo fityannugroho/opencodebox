@@ -92,6 +92,8 @@ opencodebox --with /data --with-ro /config serve
 
 **Read-Only:**
 - `/usr` - System basics
+- `/etc/resolv.conf`, `/etc/hosts` - DNS configuration and host mappings
+- `/etc/nsswitch.conf` - Name service lookup configuration (if present)
 - `/etc/ssl` - SSL/TLS certificates
 - `/etc/ca-certificates` - CA certificate store
 - `/etc/alternatives` - System alternatives (managed by update-alternatives)
