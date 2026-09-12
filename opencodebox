@@ -24,13 +24,14 @@ Usage:
 Options:
   --with /host[:/sandbox]      Bind host path read-write (sandbox path defaults to host path)
   --with-ro /host[:/sandbox]   Bind host path read-only (sandbox path defaults to host path)
+  --gpu                       Expose host GPU devices and read-only driver metadata
   --persistent-tmp            Keep /tmp in .opencodebox-tmp in the launch directory
   --podman                    Forward the host rootless Podman socket (grants host-user access)
   --version, -v                Show version information
   --help, -h                   Show this help message
 
 Examples:
-  opencodebox --persistent-tmp --podman -s SESSION_ID
+  opencodebox --gpu --persistent-tmp --podman -s SESSION_ID
   opencodebox --with ../app-backend
   opencodebox --with /mnt/data:/workspace/data
   opencodebox --with-ro /etc/hosts
@@ -129,12 +130,89 @@ sanitize_ssh_public_key_file() {
     esac
 }
 
+# BEGIN GPU MOUNTS
+# Internal root arguments allow fixture testing without real GPU hardware.
+# The launcher always calls this with the host's standard paths. /dev must be
+# trusted: type/name checks are not driver authentication or race protection.
+configure_gpu_mounts() {
+    local dev_root="${1:-/dev}" sys_root="${2:-/sys}"
+    local etc_root="${3:-/etc}" proc_root="${4:-/proc}"
+    local device relative primary=0 nvidia=0 uvm=0 dri_dir=0 caps_dir=0
+    local -a mounts=()
+
+    if [[ -L "$dev_root/dri" || -L "$dev_root/nvidia-caps" ]]; then
+        echo "Error: --gpu refuses symlinked GPU device directories." >&2
+        return 1
+    fi
+
+    for device in "$dev_root"/nvidia[0-9]* \
+        "$dev_root"/nvidiactl "$dev_root"/nvidia-uvm \
+        "$dev_root"/nvidia-uvm-tools "$dev_root"/nvidia-modeset \
+        "$dev_root"/nvidia-caps/nvidia-cap[0-9]* \
+        "$dev_root"/dri/card[0-9]* "$dev_root"/dri/renderD[0-9]* \
+        "$dev_root"/kfd; do
+        relative="${device#"$dev_root/"}"
+        # Globs discover candidates; anchored expressions enforce numeric names.
+        if [[ ! "$relative" =~ ^nvidia[0-9]+$ &&
+              ! "$relative" =~ ^dri/(card[0-9]+|renderD[0-9]+)$ &&
+              ! "$relative" =~ ^nvidia-caps/nvidia-cap[0-9]+$ ]]; then
+            case "$relative" in
+                nvidiactl|nvidia-uvm|nvidia-uvm-tools|nvidia-modeset|kfd) ;;
+                *) continue ;;
+            esac
+        fi
+        # stat without -L does not follow symlinks. Fix locale for its type text.
+        [[ ! -L "$device" ]] || continue
+        [[ "$(LC_ALL=C stat -c '%F' "$device" 2>/dev/null)" == "character special file" ]] || continue
+
+        if [[ "$relative" =~ ^nvidia[0-9]+$ ]]; then
+            primary=$((primary + 1))
+            nvidia=1
+        elif [[ "$relative" =~ ^dri/(card[0-9]+|renderD[0-9]+)$ ]]; then
+            primary=$((primary + 1))
+        fi
+        [[ "$relative" == nvidia-uvm ]] && uvm=1
+        if [[ "$relative" == dri/* && "$dri_dir" == 0 ]]; then
+            mounts+=(--dir /dev/dri)
+            dri_dir=1
+        fi
+        if [[ "$relative" == nvidia-caps/* && "$caps_dir" == 0 ]]; then
+            mounts+=(--dir /dev/nvidia-caps)
+            caps_dir=1
+        fi
+        mounts+=(--dev-bind "$device" "/dev/$relative")
+    done
+
+    if [[ "$primary" == 0 ]]; then
+        echo "Error: --gpu found no NVIDIA or DRM GPU character devices. Initialize the GPU driver on the host and relaunch opencodebox." >&2
+        return 1
+    fi
+
+    # Preserve sysfs symlink topology and the host's driver library discovery.
+    # /usr (including /usr/share vendor manifests) is already read-only mounted.
+    mounts+=(--ro-bind-try "$sys_root" /sys)
+    mounts+=(--ro-bind-try "$etc_root/ld.so.cache" /etc/ld.so.cache)
+    mounts+=(--ro-bind-try "$etc_root/OpenCL/vendors" /etc/OpenCL/vendors)
+    mounts+=(--ro-bind-try "$etc_root/vulkan/icd.d" /etc/vulkan/icd.d)
+    mounts+=(--ro-bind-try "$etc_root/glvnd/egl_vendor.d" /etc/glvnd/egl_vendor.d)
+    if [[ "$nvidia" == 1 ]]; then
+        mounts+=(--ro-bind-try "$proc_root/driver/nvidia" /proc/driver/nvidia)
+        if [[ "$uvm" == 0 ]]; then
+            echo "Warning: NVIDIA UVM device is absent; CUDA workloads may fail. Initialize the NVIDIA/UVM driver on the host and restart the sandbox." >&2
+        fi
+    fi
+    BWRAP_ARGS+=("${mounts[@]}")
+    echo "Warning: --gpu exposes host GPU devices and read-only sysfs; GPU resources and driver access are shared with the host." >&2
+}
+# END GPU MOUNTS
+
 # Parse --with and --with-ro arguments
 # These allow users to bind additional paths into the sandbox
 declare -a EXTRA_BINDS=()
 declare -a REMAINING_ARGS=()
 PODMAN_ENABLED=false
 PERSISTENT_TMP_ENABLED=false
+GPU_ENABLED=false
 
 add_readonly_regular_file() {
     local file="$1"
@@ -219,6 +297,10 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             parse_bind_arg "--ro-bind" "$1"
+            shift
+            ;;
+        --gpu)
+            GPU_ENABLED=true
             shift
             ;;
         --persistent-tmp)
@@ -426,6 +508,11 @@ declare -a BWRAP_ARGS=(
     # --- OpenCode Binary ---
     --bind "$OPCODE_DIR" /opt/opencode
 )
+
+# Device mounts must follow the private /dev; explicit user binds still come last.
+if [[ "$GPU_ENABLED" == true ]]; then
+    configure_gpu_mounts || exit 1
+fi
 
 # Private keyring (unmount if present)
 [[ -d "$HOME/.local/share/keyrings" ]] && BWRAP_ARGS+=(--tmpfs "$HOME/.local/share/keyrings")

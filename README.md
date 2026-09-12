@@ -11,6 +11,7 @@ Run OpenCode inside a bubblewrap sandbox for security isolation.
 - **Persistent Temporary Storage (Opt-In)**: Keep `/tmp` in the launch directory with `--persistent-tmp`
 - **Custom Bind Mounts**: Add read-write or read-only access with `--with` and `--with-ro`
 - **Mise Support**: Integrated with [mise](https://mise.jdx.dev) for tool management
+- **Direct GPU Access (Opt-In)**: Expose NVIDIA/DRM GPU devices with `--gpu`
 - **Rootless Podman (Opt-In)**: Use the host container service with `--podman` (grants host-user container access)
 - **SSH Agent Forwarding**: Supports SSH commit signing through the host `ssh-agent`
 - **Seccomp Sandbox Filter**: Mitigates kernel privilege escalation vulnerabilities (see [details](#seccomp-sandbox-filter))
@@ -55,6 +56,7 @@ opencodebox [OPTIONS] [OPENCODE_ARGS...]
 
 `--with` and `--with-ro` accept additional paths (directories, files, or sockets).
 
+- `--gpu` - Expose host GPU devices for direct sandbox workloads; see [direct GPU access](#direct-gpu-access-opt-in).
 - `--persistent-tmp` - Mount `.opencodebox-tmp` in the launch directory at `/tmp`; see [persistent temporary storage](#persistent-temporary-storage-opt-in).
 - `--podman` - Forward the current user's rootless Podman API socket; see [Podman support](#podman-support-opt-in) for setup and security implications.
 
@@ -79,7 +81,7 @@ opencodebox --with /data --with-ro /config serve
 
 ## How It Works
 
-1. Parse arguments (`--with`, `--with-ro`, `--podman`, `--persistent-tmp`, `--version`, `--help`)
+1. Parse arguments (`--with`, `--with-ro`, `--podman`, `--persistent-tmp`, `--gpu`, `--version`, `--help`)
 2. Check prerequisites (bwrap and opencode)
 3. Load seccomp sandbox filter (see [details](#seccomp-sandbox-filter))
 4. **Enforce security restrictions**:
@@ -143,6 +145,105 @@ Each tool is mounted only when `command -v <tool>` succeeds on the host. If the 
 - **Project directory**: Cannot run from `$HOME`, `~/.ssh`, `~/.gnupg`, or their ancestors. Use a dedicated project directory.
 - **Bind mounts**: `--with` and `--with-ro` reject paths that point to or enclose sensitive locations (`$HOME`, `~/.ssh`, `~/.gnupg`).
 - **SSH directory**: `~/.ssh` must have permissions `0700`. Fix with: `chmod 700 ~/.ssh`
+
+## Direct GPU Access (Opt-In)
+
+`--gpu` exposes GPU devices to programs running **directly inside opencodebox**:
+
+```bash
+opencodebox --gpu
+# All three opt-ins can be combined:
+opencodebox --gpu --podman --persistent-tmp -s SESSION_ID
+```
+
+When testing a checkout, use `./opencodebox` rather than an older installed copy.
+Launch from your normal host environment: an existing sandbox without GPU
+mounts cannot forward devices it cannot see. No mounts are added to an already
+running session.
+
+### Devices and driver dependencies
+
+The switch discovers and mounts these existing character devices individually
+using bubblewrap's `--dev-bind` (not a bind of the entire host `/dev`):
+
+| Device family | Paths |
+|---|---|
+| NVIDIA GPUs | `/dev/nvidiaN` (numeric N) |
+| NVIDIA auxiliary devices | `/dev/nvidiactl`, `/dev/nvidia-uvm`, `/dev/nvidia-uvm-tools`, `/dev/nvidia-modeset`, `/dev/nvidia-caps/nvidia-capN` |
+| DRM GPUs (Intel/AMD/NVIDIA) | `/dev/dri/cardN`, `/dev/dri/renderDN` |
+| AMD compute | `/dev/kfd` |
+
+It requires at least one NVIDIA GPU or DRM card/render character device. It
+skips non-character files and symlinked device nodes, rejects symlinked GPU
+parent directories, and fails clearly when no GPU is found. These checks assume
+trusted host `/dev`; they do not authenticate device drivers or eliminate
+concurrent replacement races. Devices disappearing during launch cause a mount
+failure rather than silent partial access.
+
+GPU mode also mounts these **read-only, if present**:
+
+- `/sys`, preserving the host sysfs topology and its symlink relationships.
+- `/etc/ld.so.cache`, for host driver library discovery.
+- `/etc/OpenCL/vendors`, `/etc/vulkan/icd.d`, `/etc/glvnd/egl_vendor.d`.
+- `/proc/driver/nvidia`, when an NVIDIA GPU device was found.
+
+Driver libraries and `/usr/share` vendor manifests under `/usr` are already
+visible. The switch does not install CUDA, ROCm, PyTorch, or other SDKs. Libraries,
+cache entries, or manifests pointing outside the exposed filesystem may need
+explicit same-path `--with-ro` mounts. For example, a ROCm installation under
+`/opt/rocm` may require both that path and its versioned symlink target. Direct
+GPU access is not a guarantee of compatibility with every driver/SDK layout.
+
+### Verify and troubleshoot
+
+For NVIDIA, first ensure `nvidia-smi -L` works **on the host**. After launching
+with `--gpu`, run inside the new sandbox:
+
+```bash
+nvidia-smi -L
+# If a CUDA-enabled PyTorch environment is already installed:
+python -c 'import torch; print(torch.cuda.is_available()); print(torch.cuda.device_count())'
+```
+
+`nvidia-smi` succeeding alone does not prove a CUDA workload works. When NVIDIA
+GPU nodes exist but `/dev/nvidia-uvm` is absent, the launcher warns that CUDA may
+fail. Initialize the NVIDIA/UVM driver using your distribution's normal host
+setup procedure, then restart opencodebox. The launcher never loads modules,
+runs `sudo`, changes device permissions, or initializes GPUs automatically.
+
+Existing host permissions, ACLs, supplementary group access, SELinux rules, and
+device-cgroup restrictions still apply. Fix access through the host's normal
+GPU configuration rather than granting blanket privileges. Hotplugged or
+replaced device nodes may require a sandbox restart. Explicit `--with` mounts
+still take precedence and can hide or replace GPU-related mounts.
+
+### Security and Podman distinction
+
+> **Warning:** `--gpu` exposes all matching GPU nodes present at launch, subject
+> to host access controls. It adds access to GPU driver ioctls, shared GPU
+> resources, and potentially display/control interfaces—not just compute. Driver
+> vulnerabilities, resource exhaustion, and host display interference are risks.
+> Read-only `/sys` also exposes non-GPU host hardware/kernel information. There
+> is no GPU memory quota, per-device selection, or cross-session isolation.
+
+The local namespace, capability, and seccomp settings are unchanged; the seccomp
+filter does not broadly block GPU ioctls. GPU visibility environment variables
+are not security boundaries. This switch does not forward X11/Wayland sockets
+or otherwise provide desktop-session access. Without `--gpu`, no GPU-specific
+mounts or probes are added.
+
+`--podman` uses the **host** container service, so GPU-enabled containers do not
+need `--gpu` on opencodebox. Conversely, `--gpu` does not automatically assign
+GPUs to Podman containers. Continue requesting them through the host's CDI setup:
+
+```bash
+podman run --rm --device nvidia.com/gpu=all \
+  docker.io/library/ubuntu:24.04 nvidia-smi -L
+```
+
+If the host's SELinux policy requires `--security-opt=label=disable`, apply it
+only to that container with the understanding that it disables its SELinux
+separation. Podman/CDI must already be configured on the host.
 
 ## Persistent Temporary Storage (Opt-In)
 
