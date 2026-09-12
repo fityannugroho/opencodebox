@@ -94,8 +94,9 @@ opencodebox --with /data --with-ro /config serve
 - `/usr` - System basics
 - `/etc/resolv.conf`, `/etc/hosts` - DNS configuration and host mappings
 - `/etc/nsswitch.conf` - Name service lookup configuration (if present)
-- `/etc/ssl` - SSL/TLS certificates
-- `/etc/ca-certificates` - CA certificate store
+- `/etc/ssl` - SSL/TLS certificates (if present)
+- `/etc/ca-certificates` - CA certificate store (if present)
+- `/etc/pki/ca-trust`, `/etc/pki/tls/certs` - Fedora/RHEL trust store and certificate targets for `/etc/ssl` symlinks (if present); `/etc/pki/tls/private` is not mounted
 - `/etc/alternatives` - System alternatives (managed by update-alternatives)
 - `$HOME/.local` - User local data (except keyrings/tool data)
 - `$HOME/.cache/opencode` - OpenCode cache
