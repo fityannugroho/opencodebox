@@ -322,8 +322,12 @@ declare -a BWRAP_ARGS=(
     --ro-bind-try /etc/nsswitch.conf /etc/nsswitch.conf
 
     # --- SSL/TLS Certificates ---
-    --ro-bind /etc/ssl /etc/ssl
-    --ro-bind /etc/ca-certificates /etc/ca-certificates
+    # Certificate layouts differ by distribution. Fedora's /etc/ssl links
+    # into /etc/pki; expose its trust store without mounting tls/private.
+    --ro-bind-try /etc/ssl /etc/ssl
+    --ro-bind-try /etc/ca-certificates /etc/ca-certificates
+    --ro-bind-try /etc/pki/ca-trust /etc/pki/ca-trust
+    --ro-bind-try /etc/pki/tls/certs /etc/pki/tls/certs
 
     # --- Alternatives (managed by update-alternatives) ---
     --ro-bind /etc/alternatives /etc/alternatives
