@@ -315,6 +315,12 @@ declare -a BWRAP_ARGS=(
     # --- Sandbox Identity ---
     --hostname opencodebox
 
+    # --- Hostname Resolution ---
+    # Keep explicit destinations: resolv.conf may be a symlink on the host.
+    --ro-bind /etc/resolv.conf /etc/resolv.conf
+    --ro-bind /etc/hosts /etc/hosts
+    --ro-bind-try /etc/nsswitch.conf /etc/nsswitch.conf
+
     # --- SSL/TLS Certificates ---
     --ro-bind /etc/ssl /etc/ssl
     --ro-bind /etc/ca-certificates /etc/ca-certificates
