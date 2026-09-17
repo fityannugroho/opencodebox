@@ -13,4 +13,5 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv run --group dev pytest -v
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - run: bash tests/seccomp.sh
