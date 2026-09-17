@@ -1,0 +1,13 @@
+[project]
+name = "opencodebox"
+version = "0.4.4"
+description = "Run OpenCode inside a bubblewrap sandbox for security isolation"
+readme = "README.md"
+requires-python = ">=3.12"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
