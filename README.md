@@ -178,6 +178,23 @@ The filter is automatically applied if the corresponding `.bpf` file is availabl
 
 ## Development
 
+### Tests
+
+**Dependencies:**
+- **uv** - Python package manager ([install](https://docs.astral.sh/uv/getting-started/installation/))
+- **bubblewrap** - Required only for `tests/seccomp.sh` (skips cleanly when absent)
+
+**Run:**
+```bash
+uv run --group dev pytest -v   # launcher tests (mocked bwrap, no root needed)
+bash tests/seccomp.sh          # seccomp integration (real bwrap + prebuilt .bpf)
+```
+
+Launcher tests are black-box: `bwrap` is mocked, the argv it would receive is
+asserted. GPU tests (future) plug into `tests/conftest.py` the same way.
+
+### Seccomp BPF filter
+
 To generate the seccomp BPF filter files (`.bpf`):
 
 **Dependencies:**
