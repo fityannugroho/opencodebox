@@ -23,6 +23,16 @@ fi
 
 exec {FILTER_FD}<"$FILTER"
 
+PREFLIGHT_ERR="$(bwrap --ro-bind /usr /usr --proc /proc --dev /dev -- /bin/true 2>&1)" || {
+    if [[ "$PREFLIGHT_ERR" == *"uid map"* || "$PREFLIGHT_ERR" == *"user namespace"* ]]; then
+        echo "SKIP: unprivileged user namespaces unavailable: $PREFLIGHT_ERR"
+        exit 0
+    fi
+    echo "FAIL: bwrap preflight failed: $PREFLIGHT_ERR" >&2
+    exit 1
+}
+echo "ok: bwrap sandbox runs"
+
 echo "ok: benign command runs under filter"
 bwrap --ro-bind /usr /usr --proc /proc --dev /dev \
     --seccomp "$FILTER_FD" -- /bin/true
