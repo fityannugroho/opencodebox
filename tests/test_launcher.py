@@ -92,6 +92,37 @@ def test_passthrough_args_reach_opencode(launcher):
     assert command[3:] == ["--", "-s", "session", "run", "prompt"]
 
 
+def test_exec_overrides_default_command(launcher):
+    _, command = launcher.captured(launcher.run_launcher("--exec", "/bin/bash"))
+    assert command[3:] == ["--"]
+    assert 'exec "/bin/bash"' in command[2]
+
+
+def test_exec_with_passthrough_args(launcher):
+    _, command = launcher.captured(launcher.run_launcher("--exec", "/bin/bash", "-l"))
+    assert command[3:] == ["--", "-l"]
+    assert 'exec "/bin/bash"' in command[2]
+
+
+def test_exec_requires_value(launcher):
+    launcher.assert_rejected("--exec")
+
+
+def test_default_command_is_opencode(launcher):
+    _, command = launcher.captured(launcher.run_launcher())
+    assert command[3:] == ["--"]
+    assert 'exec "/opt/opencode/opencode"' in command[2]
+
+
+def test_exec_with_binds(launcher):
+    extra = launcher.root / "extra"
+    extra.mkdir()
+    options, command = launcher.captured(launcher.run_launcher("--with", str(extra), "--exec", "/bin/sh"))
+    assert has_seq(options, ["--bind", str(extra), str(extra)])
+    assert command[3:] == ["--"]
+    assert 'exec "/bin/sh"' in command[2]
+
+
 def test_reject_sensitive_and_bad_binds(launcher):
     launcher.assert_rejected("--with", str(launcher.home))
     launcher.assert_rejected("--with", "/")

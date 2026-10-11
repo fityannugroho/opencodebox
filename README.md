@@ -50,6 +50,7 @@ opencodebox [OPTIONS] [OPENCODE_ARGS...]
 
 - `--with /host[:/sandbox]` - Bind host path read-write to sandbox
 - `--with-ro /host[:/sandbox]` - Bind host path read-only to sandbox
+- `--exec COMMAND` - Run `COMMAND` inside the sandbox instead of `opencode`
 
 These options allow you to specify additional directories to mount inside the sandbox for read-write or read-only access.
 
@@ -70,11 +71,17 @@ opencodebox --with-ro /etc/hosts
 
 # Run sandboxed opencode server with specified bind mounts
 opencodebox --with /data --with-ro /config serve
+
+# Run a custom command inside the sandbox
+opencodebox --exec /bin/bash
+
+# Run a custom command with arguments
+opencodebox --exec /bin/bash -l
 ```
 
 ## How It Works
 
-1. Parse arguments (`--with`, `--with-ro`, `--version`, `--help`)
+1. Parse arguments (`--with`, `--with-ro`, `--exec`, `--version`, `--help`)
 2. Check prerequisites (bwrap and opencode)
 3. Load seccomp sandbox filter (see [details](#seccomp-sandbox-filter))
 4. **Enforce security restrictions**:
@@ -84,7 +91,7 @@ opencodebox --with /data --with-ro /config serve
 5. Build bubblewrap sandbox with namespace isolation and bind mounts
 6. Setup SSH (sanitized `.pub` keys, `known_hosts`, agent forwarding)
 7. Add conditional tool mounts (bun, npm, pnpm, uv, pipenv, cargo, git, mise) and extra bind mounts
-8. Execute opencode inside the sandbox
+8. Execute the target command (`opencode` by default, or `--exec` override) inside the sandbox
 
 ## Bind Mounts Structure
 

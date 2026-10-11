@@ -7,6 +7,7 @@
 # ============================================================
 
 VERSION="0.4.4"
+EXEC_CMD="/opt/opencode/opencode"
 
 print_version() {
     echo "opencode v$(opencode --version)"
@@ -24,6 +25,7 @@ Usage:
 Options:
   --with /host[:/sandbox]      Bind host path read-write (sandbox path defaults to host path)
   --with-ro /host[:/sandbox]   Bind host path read-only (sandbox path defaults to host path)
+  --exec COMMAND               Run COMMAND inside the sandbox instead of opencode
   --version, -v                Show version information
   --help, -h                   Show this help message
 
@@ -32,6 +34,7 @@ Examples:
   opencodebox --with /mnt/data:/workspace/data
   opencodebox --with-ro /etc/hosts
   opencodebox --with ~/another-project1 --with-ro ~/another-project2 serve
+  opencodebox --exec /bin/bash
 EOF
     exit 0
 }
@@ -214,6 +217,17 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             parse_bind_arg "--ro-bind" "$1"
+            shift
+            ;;
+        # --exec: override the command to run inside the sandbox
+        --exec)
+            shift
+            if [[ $# -eq 0 ]]; then
+                echo "Error: --exec requires a value" >&2
+                echo "Usage: opencodebox --exec /path/to/command [ARGS...]" >&2
+                exit 1
+            fi
+            EXEC_CMD="$1"
             shift
             ;;
         # Pass through all other args to opencode
@@ -494,5 +508,5 @@ exec bwrap "${BWRAP_ARGS[@]}" -- \
         if [ "'"$mise_installed"'" = true ]; then
             eval "$(mise activate bash)"
         fi
-        exec /opt/opencode/opencode "$@"
+        exec "'"$EXEC_CMD"'" "$@"
     ' -- "$@"
