@@ -287,9 +287,21 @@ CONFIG_DIR="$HOME/.config/opencode"
 AGENTS_DIR="$HOME/.agents"
 CACHE_DIR="$HOME/.cache/opencode"
 
-# Locate opencode binary
+# Locate the opencode launcher. npm-style installs (mise/aube, npm, pnpm, bun)
+# put a shim in a node_modules/.bin directory that execs its target through a
+# path relative to itself (e.g. "$basedir/../.mise/@opencode+cli@<ver>/...").
+# The shim's parent directory must therefore stay visible next to it.
 OPCODE_PATH=$(command -v opencode)
 OPCODE_DIR=$(dirname "$OPCODE_PATH")
+OPCODE_BIND_FLAG="--bind"
+OPCODE_ROOT="$OPCODE_DIR"
+OPCODE_LAUNCHER="$(basename "$OPCODE_PATH")"
+if [[ "$(basename "$OPCODE_DIR")" == ".bin" ]] && ! is_sensitive_path "$(dirname "$OPCODE_DIR")"; then
+    OPCODE_BIND_FLAG="--ro-bind"
+    OPCODE_ROOT="$(dirname "$OPCODE_DIR")"
+    OPCODE_LAUNCHER="$(basename "$OPCODE_DIR")/$(basename "$OPCODE_PATH")"
+fi
+OPCODE_SANDBOX_PATH="/opt/opencode/$OPCODE_LAUNCHER"
 
 # bwrap --bind hard-fails if the source is missing; opencode v2 keeps state under
 # ~/.local/state/opencode, which v1 users and fresh hosts may not have created yet.
@@ -355,7 +367,7 @@ declare -a BWRAP_ARGS=(
     --bind "$APP_DATA" "$APP_DATA"          # OpenCode data (read-write)
 
     # --- OpenCode Binary ---
-    --bind "$OPCODE_DIR" /opt/opencode
+    "$OPCODE_BIND_FLAG" "$OPCODE_ROOT" /opt/opencode
 )
 
 # Private keyring (unmount if present)
@@ -499,5 +511,5 @@ exec bwrap "${BWRAP_ARGS[@]}" -- \
         if [ "'"$mise_installed"'" = true ]; then
             eval "$(mise activate bash)"
         fi
-        exec /opt/opencode/opencode "$@"
+        exec "'"$OPCODE_SANDBOX_PATH"'" "$@"
     ' -- "$@"

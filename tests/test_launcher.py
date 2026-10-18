@@ -1,7 +1,7 @@
 """Smoke tests for current main behavior. All black-box: bwrap is mocked,
 argv is asserted. No sandbox ever runs here."""
 
-from conftest import has_seq, seqs
+from conftest import Launcher, has_seq, seqs
 
 
 def test_help_exits_zero_without_bwrap(launcher):
@@ -126,3 +126,26 @@ def test_ssh_permissions_enforced(launcher):
     ssh.chmod(0o700)
     options, _ = launcher.captured(launcher.run_launcher())
     assert has_seq(options, ["--dir", str(ssh)])
+
+
+def test_shim_launcher_keeps_relative_layout(launcher_shim):
+    # npm-style installs exec their target relative to the shim, so the parent
+    # of node_modules/.bin must be mounted, not the .bin directory alone.
+    options, command = launcher_shim.captured(launcher_shim.run_launcher())
+    assert has_seq(options, ["--ro-bind", str(launcher_shim.bin.parent), "/opt/opencode"])
+    assert "/opt/opencode/.bin/opencode" in command[2]
+
+
+def test_plain_bin_launcher_argv_unchanged(launcher):
+    # Non-.bin layouts must keep the pre-existing argv and exec target.
+    options, command = launcher.captured(launcher.run_launcher())
+    assert has_seq(options, ["--bind", str(launcher.bin), "/opt/opencode"])
+    assert "/opt/opencode/opencode" in command[2]
+
+
+def test_shim_under_home_falls_back_without_binding_home(tmp_path):
+    # ~/.bin/opencode: parent is $HOME, which must never enter the sandbox.
+    launcher = Launcher(tmp_path, bin_dir=tmp_path / "home/.bin")
+    options, command = launcher.captured(launcher.run_launcher())
+    assert has_seq(options, ["--bind", str(launcher.bin), "/opt/opencode"])
+    assert "/opt/opencode/opencode" in command[2]

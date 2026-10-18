@@ -19,11 +19,11 @@ LAUNCHER = Path(__file__).resolve().parent.parent / "opencodebox"
 
 
 class Launcher:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, bin_dir: Path | None = None):
         self.root = root
         self.home = root / "home"
         self.project = root / "project with spaces"
-        self.bin = root / "bin"
+        self.bin = bin_dir if bin_dir is not None else root / "bin"
         for directory in (self.home, self.project, self.bin):
             directory.mkdir(parents=True)
         self.capture = root / "bwrap.json"
@@ -35,7 +35,7 @@ class Launcher:
             "CAPTURE": str(self.capture),
             "CALLS": str(self.calls),
         }
-        for name in ("bash", "cat", "dirname", "uname", "id", "stat", "realpath", "mkdir"):
+        for name in ("bash", "basename", "cat", "dirname", "uname", "id", "stat", "realpath", "mkdir"):
             target = shutil.which(name, path="/usr/bin:/bin")
             assert target is not None, name
             (self.bin / name).symlink_to(target)
@@ -100,6 +100,12 @@ else:
 @pytest.fixture
 def launcher(tmp_path: Path) -> Launcher:
     return Launcher(tmp_path)
+
+
+@pytest.fixture
+def launcher_shim(tmp_path: Path) -> Launcher:
+    """Launcher whose opencode is an npm-style shim in node_modules/.bin."""
+    return Launcher(tmp_path, bin_dir=tmp_path / "node_modules/.bin")
 
 
 def seqs(options: list, n: int) -> list:
