@@ -17,6 +17,7 @@ def test_version_reports_opencodebox(launcher):
         result = launcher.run_launcher(*args)
         assert result.returncode == 0, result.stderr
         assert "opencodebox v" in result.stdout
+        assert result.stdout.splitlines()[0] == "opencode v9.9.9-test"
 
 
 def test_unconditional_mounts(launcher):

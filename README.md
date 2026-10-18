@@ -121,7 +121,7 @@ The directory holding the `opencode` binary is mounted at `/opt/opencode` and ex
 
 - The shim must resolve its target with exactly one `..` level (as with mise's npm backend/aube).
 - A shim outside `node_modules` (for example `$HOME/.bin`) is not relocated: it keeps the old mount, never binds `$HOME`, and prints a warning; expect `not found` (exit 127) for relative-target shims.
-- Self-upgrading from inside the sandbox (`opencode upgrade`, plugin bootstrap into the install tree) is not supported for the read-only layout — upgrade on the host instead (e.g. `mise upgrade opencode`).
+- Self-upgrading or installing plugins from inside the sandbox is not supported for the read-only layout: `opencode upgrade` writes to the install tree, and `opencode plugin add` updates the global configuration under `~/.config/opencode` (mounted read-only) — do both on the host instead (e.g. `mise upgrade opencode`).
 - On first run the launcher creates opencode's config, agents, cache (including the helper `bin` directory) and data directories when they are missing, so a fresh host does not fail at the bind step.
 - Only `node_modules/.bin` shims are relocated. Global `bin` shims from `npm|pnpm|bun install -g` and symlinks whose target lies outside the mounted roots still fail with `not found` (exit 127).
 - OpenCode 2 runs a shared background service on a fixed local port (default `49374`). The sandbox shares the host network namespace, so service-backed commands fail while a host service is running (`Managed service port 49374 on 127.0.0.1 is already in use by another process`); use `--standalone` or stop/disable the host service. The interactive TUI is expected to hit the same limitation (not tested here).
