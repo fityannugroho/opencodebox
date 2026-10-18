@@ -9,7 +9,10 @@
 VERSION="0.4.4"
 
 print_version() {
-    echo "opencode v$(opencode --version)"
+    local opencode_version
+    opencode_version="$(opencode --version)"
+    # opencode v1 prints a bare version; v2 prints "opencode v<version>".
+    echo "opencode v${opencode_version#opencode v}"
     echo "opencodebox v$VERSION"
     exit 0
 }
@@ -314,6 +317,11 @@ OPCODE_SANDBOX_PATH="/opt/opencode/$OPCODE_LAUNCHER"
 # bwrap --bind hard-fails if the source is missing; opencode v2 keeps state under
 # ~/.local/state/opencode, which v1 users and fresh hosts may not have created yet.
 mkdir -p "$HOME/.local/state/opencode"
+
+# A fresh host has none of opencode's directories: bwrap --ro-bind/--bind fails
+# on missing sources, and opencode (v1 and v2) mkdirs ~/.cache/opencode/bin at
+# startup even though the cache tree is mounted read-only.
+mkdir -p "$CONFIG_DIR" "$AGENTS_DIR" "$CACHE_DIR/bin" "$APP_DATA"
 
 # Later bindings override earlier ones (--with binds come last = highest priority)
 declare -a BWRAP_ARGS=(

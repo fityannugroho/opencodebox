@@ -175,3 +175,34 @@ def test_dot_dot_path_normalised_before_guard(tmp_path):
     assert has_seq(options, ["--bind", str(tmp_path / "home/.bin"), "/opt/opencode"])
     assert 'exec "/opt/opencode/opencode" "$@"' in command[2]
     assert "Warning" in result.stderr
+
+
+def test_missing_opencode_dirs_created_before_bind(launcher):
+    # bwrap hard-fails on missing bind sources, and opencode (v1 and v2)
+    # mkdirs ~/.cache/opencode/bin at startup while the cache tree is read-only.
+    dirs = (
+        launcher.home / ".config/opencode",
+        launcher.home / ".agents",
+        launcher.home / ".cache/opencode/bin",
+        launcher.home / ".local/share/opencode",
+    )
+    for directory in dirs:
+        assert not directory.exists()
+    launcher.captured(launcher.run_launcher())
+    for directory in dirs:
+        assert directory.is_dir(), f"launcher must create {directory}"
+
+
+def test_version_handles_v2_prefixed_output(launcher):
+    # opencode v2 prints "opencode v<version>"; v1 prints a bare version.
+    launcher.command("opencode", """
+if sys.argv[1:] == ['--version']:
+    print('opencode v9.9.9-test')
+else:
+    raise SystemExit('opencode must not execute')
+""")
+    result = launcher.run_launcher("--version")
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert lines[0] == "opencode v9.9.9-test"
+    assert lines[1].startswith("opencodebox v")
