@@ -133,19 +133,45 @@ def test_shim_launcher_keeps_relative_layout(launcher_shim):
     # of node_modules/.bin must be mounted, not the .bin directory alone.
     options, command = launcher_shim.captured(launcher_shim.run_launcher())
     assert has_seq(options, ["--ro-bind", str(launcher_shim.bin.parent), "/opt/opencode"])
-    assert "/opt/opencode/.bin/opencode" in command[2]
+    assert 'exec "/opt/opencode/.bin/opencode" "$@"' in command[2]
 
 
-def test_plain_bin_launcher_argv_unchanged(launcher):
-    # Non-.bin layouts must keep the pre-existing argv and exec target.
+def test_plain_bin_launcher_mount_and_target_unchanged(launcher):
+    # Non-.bin layouts must keep the pre-existing mount and exec target.
     options, command = launcher.captured(launcher.run_launcher())
     assert has_seq(options, ["--bind", str(launcher.bin), "/opt/opencode"])
-    assert "/opt/opencode/opencode" in command[2]
+    assert 'exec "/opt/opencode/opencode" "$@"' in command[2]
 
 
 def test_shim_under_home_falls_back_without_binding_home(tmp_path):
-    # ~/.bin/opencode: parent is $HOME, which must never enter the sandbox.
+    # $HOME/.bin/opencode: $HOME must never enter the sandbox, so the shim is
+    # not relocated and the user gets a warning instead.
     launcher = Launcher(tmp_path, bin_dir=tmp_path / "home/.bin")
-    options, command = launcher.captured(launcher.run_launcher())
+    result = launcher.run_launcher()
+    options, command = launcher.captured(result)
     assert has_seq(options, ["--bind", str(launcher.bin), "/opt/opencode"])
-    assert "/opt/opencode/opencode" in command[2]
+    assert 'exec "/opt/opencode/opencode" "$@"' in command[2]
+    assert "Warning" in result.stderr
+
+
+def test_non_node_modules_bin_falls_back(tmp_path):
+    # The relocation is limited to the npm convention; any other ".bin"
+    # directory must not pull its parent into the sandbox.
+    launcher = Launcher(tmp_path, bin_dir=tmp_path / "vendor/.bin")
+    result = launcher.run_launcher()
+    options, command = launcher.captured(result)
+    assert has_seq(options, ["--bind", str(launcher.bin), "/opt/opencode"])
+    assert 'exec "/opt/opencode/opencode" "$@"' in command[2]
+    assert "Warning" in result.stderr
+
+
+def test_dot_dot_path_normalised_before_guard(tmp_path):
+    # A PATH entry containing ".." must not change what gets mounted: the path
+    # is normalised before the layout checks, and the fallback binds the
+    # normalised directory (here the (fake) $HOME/.bin itself).
+    launcher = Launcher(tmp_path, bin_dir=tmp_path / "home/.local/../.bin")
+    result = launcher.run_launcher()
+    options, command = launcher.captured(result)
+    assert has_seq(options, ["--bind", str(tmp_path / "home/.bin"), "/opt/opencode"])
+    assert 'exec "/opt/opencode/opencode" "$@"' in command[2]
+    assert "Warning" in result.stderr

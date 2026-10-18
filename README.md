@@ -115,6 +115,14 @@ opencodebox --with /data --with-ro /config serve
 - `$HOME/.cache` - Universal cache
 - `$HOME/.local/share/keyrings` - Exclude private keyring (if exists on host)
 
+### OpenCode Launcher Mount
+
+The directory holding the `opencode` binary is mounted at `/opt/opencode` and executed from there (read-write, as before). When `opencode` is an npm-style shim inside a `<...>/node_modules/.bin` directory, the sandbox instead mounts that `node_modules` directory **read-only** and executes the shim at `/opt/opencode/.bin/opencode`, because such shims resolve their target relative to their own location.
+
+- The shim must resolve its target with exactly one `..` level (as with mise's npm backend/aube).
+- A shim outside `node_modules` (for example `$HOME/.bin`) is not relocated: it keeps the old mount, never binds `$HOME`, and prints a warning; expect `not found` (exit 127) for relative-target shims.
+- Self-upgrading from inside the sandbox (`opencode upgrade`, plugin bootstrap into the install tree) is not supported for the read-only layout — upgrade on the host instead (e.g. `mise upgrade opencode`).
+
 ### Conditional Tool Mounts (Requires Tool Installed on Host)
 
 Each tool is mounted only when `command -v <tool>` succeeds on the host. If the tool is not installed, none of its directories are bound into the sandbox.

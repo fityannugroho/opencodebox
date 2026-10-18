@@ -292,14 +292,22 @@ CACHE_DIR="$HOME/.cache/opencode"
 # path relative to itself (e.g. "$basedir/../.mise/@opencode+cli@<ver>/...").
 # The shim's parent directory must therefore stay visible next to it.
 OPCODE_PATH=$(command -v opencode)
-OPCODE_DIR=$(dirname "$OPCODE_PATH")
+# Lexical normalisation only (symlinks stay unresolved): PATH entries with "."
+# or ".." must not change what gets mounted or slip past the guard below.
+OPCODE_DIR="$(realpath -ms "$OPCODE_PATH" 2>/dev/null || printf '%s' "$OPCODE_PATH")"
+OPCODE_DIR="${OPCODE_DIR%/*}"
+OPCODE_PARENT="${OPCODE_DIR%/*}"
 OPCODE_BIND_FLAG="--bind"
 OPCODE_ROOT="$OPCODE_DIR"
-OPCODE_LAUNCHER="$(basename "$OPCODE_PATH")"
-if [[ "$(basename "$OPCODE_DIR")" == ".bin" ]] && ! is_sensitive_path "$(dirname "$OPCODE_DIR")"; then
-    OPCODE_BIND_FLAG="--ro-bind"
-    OPCODE_ROOT="$(dirname "$OPCODE_DIR")"
-    OPCODE_LAUNCHER="$(basename "$OPCODE_DIR")/$(basename "$OPCODE_PATH")"
+OPCODE_LAUNCHER="${OPCODE_PATH##*/}"
+if [[ "${OPCODE_DIR##*/}" == ".bin" ]]; then
+    if [[ "${OPCODE_PARENT##*/}" == "node_modules" ]] && ! is_sensitive_path "$OPCODE_PARENT"; then
+        OPCODE_BIND_FLAG="--ro-bind"
+        OPCODE_ROOT="$OPCODE_PARENT"
+        OPCODE_LAUNCHER="${OPCODE_DIR##*/}/${OPCODE_PATH##*/}"
+    else
+        echo "Warning: $OPCODE_PATH looks like an npm-style shim, but ${OPCODE_PARENT} is not mounted (not node_modules, or sensitive). Unless the shim is self-contained, it will fail with 'not found' (exit 127)." >&2
+    fi
 fi
 OPCODE_SANDBOX_PATH="/opt/opencode/$OPCODE_LAUNCHER"
 

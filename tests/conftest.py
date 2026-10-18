@@ -35,7 +35,7 @@ class Launcher:
             "CAPTURE": str(self.capture),
             "CALLS": str(self.calls),
         }
-        for name in ("bash", "basename", "cat", "dirname", "uname", "id", "stat", "realpath", "mkdir"):
+        for name in ("bash", "cat", "dirname", "uname", "id", "stat", "realpath", "mkdir"):
             target = shutil.which(name, path="/usr/bin:/bin")
             assert target is not None, name
             (self.bin / name).symlink_to(target)
