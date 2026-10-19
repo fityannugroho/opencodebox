@@ -96,8 +96,8 @@ def test_with_ro_custom_destination_is_last(launcher):
     overlay_src = str(launcher.home / ".local/share/opencodebox/disabled-service.json")
     config = str(launcher.home / ".config/opencode")
     tail = ["--ro-bind", overlay_src, f"{config}/service.json",
-            "--ro-bind", overlay_src, f"{config}/service-local.json"]
-    assert options[-len(tail):] == tail
+            "--ro-bind", overlay_src, f"{config}/service-local.json",
+            "--ro-bind", overlay_src, f"{config}/service-prod.json"]
     triples = seqs(options, 3)
     assert triples.index(["--ro-bind", str(extra), "/custom/path"]) < len(options) - len(tail)
 
@@ -224,6 +224,7 @@ def test_v2_overlay_forces_disabled_service(launcher):
     config = str(launcher.home / ".config/opencode")
     assert has_seq(options, ["--ro-bind", overlay_src, f"{config}/service.json"])
     assert has_seq(options, ["--ro-bind", overlay_src, f"{config}/service-local.json"])
+    assert has_seq(options, ["--ro-bind", overlay_src, f"{config}/service-prod.json"])
     overlay_path = launcher.home / ".local/share/opencodebox/disabled-service.json"
     assert overlay_path.read_text() == '{\n  "disabled": true\n}\n'
     triples = seqs(options, 3)
@@ -231,6 +232,7 @@ def test_v2_overlay_forces_disabled_service(launcher):
     assert config_ro, "config ro-bind must exist"
     assert triples.index(["--ro-bind", overlay_src, f"{config}/service.json"]) > triples.index(config_ro[0])
     assert triples.index(["--ro-bind", overlay_src, f"{config}/service-local.json"]) > triples.index(config_ro[0])
+    assert triples.index(["--ro-bind", overlay_src, f"{config}/service-prod.json"]) > triples.index(config_ro[0])
 
 
 def test_v2_overlay_after_extra_bind(launcher):
@@ -243,12 +245,13 @@ def test_v2_overlay_after_extra_bind(launcher):
     extra_idx = triples.index(["--ro-bind", str(extra), "/custom/path"])
     assert triples.index(["--ro-bind", overlay_src, f"{config}/service.json"]) > extra_idx
     assert triples.index(["--ro-bind", overlay_src, f"{config}/service-local.json"]) > extra_idx
+    assert triples.index(["--ro-bind", overlay_src, f"{config}/service-prod.json"]) > extra_idx
 
 
 def test_overlay_seeds_missing_service_config(launcher):
     config = launcher.home / ".config/opencode"
     launcher.captured(launcher.run_launcher())
-    for name in ("service.json", "service-local.json"):
+    for name in ("service.json", "service-local.json", "service-prod.json"):
         path = config / name
         assert path.exists(), f"launcher must seed missing {name}"
         assert path.read_text() == '{}\n'
@@ -262,6 +265,24 @@ def test_overlay_preserves_existing_service_config(launcher):
     assert (config / "service.json").read_text() == '{"password": "pw"}'
     overlay_src = str(launcher.home / ".local/share/opencodebox/disabled-service.json")
     assert has_seq(options, ["--ro-bind", overlay_src, f"{config}/service.json"])
+
+
+def test_overlay_prod_channel_covered(launcher):
+    # A prod-channel binary reads service-prod.json; on a fresh host the file
+    # is absent upstream, which reads as {} (not disabled) and would take the
+    # managed path in-sandbox. The overlay must cover it exactly once.
+    options, _ = launcher.captured(launcher.run_launcher())
+    config = launcher.home / ".config/opencode"
+    prod = config / "service-prod.json"
+    assert prod.exists(), "launcher must seed missing service-prod.json"
+    assert prod.read_text() == '{}\n'
+    overlay_src = str(launcher.home / ".local/share/opencodebox/disabled-service.json")
+    triples = seqs(options, 3)
+    prod_seq = ["--ro-bind", overlay_src, f"{config}/service-prod.json"]
+    assert triples.count(prod_seq) == 1, "prod overlay must appear exactly once"
+    config_ro = [s for s in triples if s == ["--ro-bind", str(config), str(config)]]
+    assert config_ro, "config ro-bind must exist"
+    assert triples.index(prod_seq) > triples.index(config_ro[0])
 
 
 @pytest.mark.parametrize("args", [

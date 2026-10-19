@@ -387,7 +387,7 @@ mkdir -p "$HOME/.local/state/opencode"
 # on missing sources, and opencode (v1 and v2) mkdirs ~/.cache/opencode/bin at
 # startup even though the cache tree is mounted read-only.
 mkdir -p "$CONFIG_DIR" "$AGENTS_DIR" "$CACHE_DIR/bin" "$APP_DATA"
-for _iso_seed in service.json service-local.json; do
+for _iso_seed in service.json service-local.json service-prod.json; do
     if [[ ! -e "$CONFIG_DIR/$_iso_seed" ]]; then
         printf '{}\n' > "$CONFIG_DIR/$_iso_seed"
     fi
@@ -596,13 +596,13 @@ ISOD_OVERLAY_DIR="$HOME/.local/share/opencodebox"
 ISOD_OVERLAY_SRC="$ISOD_OVERLAY_DIR/disabled-service.json"
 mkdir -p "$ISOD_OVERLAY_DIR"
 printf '{\n  "disabled": true\n}\n' > "$ISOD_OVERLAY_SRC"
-for _iso_name in service.json service-local.json; do
+for _iso_name in service.json service-local.json service-prod.json; do
     BWRAP_ARGS+=(--ro-bind "$ISOD_OVERLAY_SRC" "$CONFIG_DIR/$_iso_name")
 done
 shopt -s nullglob
 for _iso_existing in "$CONFIG_DIR"/service-*.json; do
     case "${_iso_existing##*/}" in
-        service.json|service-local.json) ;;
+        service.json|service-local.json|service-prod.json) ;;
         *) BWRAP_ARGS+=(--ro-bind "$ISOD_OVERLAY_SRC" "$_iso_existing") ;;
     esac
 done
