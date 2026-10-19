@@ -1,6 +1,8 @@
 """Smoke tests for current main behavior. All black-box: bwrap is mocked,
 argv is asserted. No sandbox ever runs here."""
 
+import pytest
+
 from conftest import Launcher, has_seq, seqs
 
 
@@ -85,12 +87,19 @@ def test_with_overrides_tmpfs_last_wins(launcher):
 
 
 def test_with_ro_custom_destination_is_last(launcher):
-    # EXTRA_BINDS is appended after --seccomp in the launcher, so user binds
-    # always form the tail regardless of conditional mounts.
+    # EXTRA_BINDS is appended after --seccomp, but the v2 isolation overlay
+    # binds come after EXTRA_BINDS (later binds win), so the overlay forms
+    # the tail and user binds sit immediately before it.
     extra = launcher.root / "extra"
     extra.mkdir()
     options, _ = launcher.captured(launcher.run_launcher("--with-ro", f"{extra}:/custom/path"))
-    assert options[-3:] == ["--ro-bind", str(extra), "/custom/path"]
+    overlay_src = str(launcher.home / ".local/share/opencodebox/disabled-service.json")
+    config = str(launcher.home / ".config/opencode")
+    tail = ["--ro-bind", overlay_src, f"{config}/service.json",
+            "--ro-bind", overlay_src, f"{config}/service-local.json"]
+    assert options[-len(tail):] == tail
+    triples = seqs(options, 3)
+    assert triples.index(["--ro-bind", str(extra), "/custom/path"]) < len(options) - len(tail)
 
 
 def test_seccomp_fd_forwarded_when_filter_present(launcher):
@@ -207,3 +216,125 @@ else:
     lines = result.stdout.splitlines()
     assert lines[0] == "opencode v9.9.9-test"
     assert lines[1].startswith("opencodebox v")
+
+
+def test_v2_overlay_forces_disabled_service(launcher):
+    options, _ = launcher.captured(launcher.run_launcher())
+    overlay_src = str(launcher.home / ".local/share/opencodebox/disabled-service.json")
+    config = str(launcher.home / ".config/opencode")
+    assert has_seq(options, ["--ro-bind", overlay_src, f"{config}/service.json"])
+    assert has_seq(options, ["--ro-bind", overlay_src, f"{config}/service-local.json"])
+    overlay_path = launcher.home / ".local/share/opencodebox/disabled-service.json"
+    assert overlay_path.read_text() == '{\n  "disabled": true\n}\n'
+    triples = seqs(options, 3)
+    config_ro = [s for s in triples if s == ["--ro-bind", config, config]]
+    assert config_ro, "config ro-bind must exist"
+    assert triples.index(["--ro-bind", overlay_src, f"{config}/service.json"]) > triples.index(config_ro[0])
+    assert triples.index(["--ro-bind", overlay_src, f"{config}/service-local.json"]) > triples.index(config_ro[0])
+
+
+def test_v2_overlay_after_extra_bind(launcher):
+    extra = launcher.root / "extra"
+    extra.mkdir()
+    options, _ = launcher.captured(launcher.run_launcher("--with-ro", f"{extra}:/custom/path"))
+    overlay_src = str(launcher.home / ".local/share/opencodebox/disabled-service.json")
+    config = str(launcher.home / ".config/opencode")
+    triples = seqs(options, 3)
+    extra_idx = triples.index(["--ro-bind", str(extra), "/custom/path"])
+    assert triples.index(["--ro-bind", overlay_src, f"{config}/service.json"]) > extra_idx
+    assert triples.index(["--ro-bind", overlay_src, f"{config}/service-local.json"]) > extra_idx
+
+
+def test_overlay_seeds_missing_service_config(launcher):
+    config = launcher.home / ".config/opencode"
+    launcher.captured(launcher.run_launcher())
+    for name in ("service.json", "service-local.json"):
+        path = config / name
+        assert path.exists(), f"launcher must seed missing {name}"
+        assert path.read_text() == '{}\n'
+
+
+def test_overlay_preserves_existing_service_config(launcher):
+    config = launcher.home / ".config/opencode"
+    config.mkdir(parents=True)
+    (config / "service.json").write_text('{"password": "pw"}')
+    options, _ = launcher.captured(launcher.run_launcher())
+    assert (config / "service.json").read_text() == '{"password": "pw"}'
+    overlay_src = str(launcher.home / ".local/share/opencodebox/disabled-service.json")
+    assert has_seq(options, ["--ro-bind", overlay_src, f"{config}/service.json"])
+
+
+@pytest.mark.parametrize("args", [
+    ("pair",),
+    ("pair", "--url", "http://127.0.0.1:4097"),
+    ("pair", "--remote"),
+    ("service", "status"),
+    ("service", "start"),
+    ("upgrade",),
+    ("update",),
+    ("uninstall",),
+    ("serve", "--service"),
+    ("serve", "--stdio"),
+    ("--server", "http://127.0.0.1:1"),
+    ("models", "--server", "http://127.0.0.1:1"),
+    ("run", "--title", "--server"),
+])
+def test_isolation_refusals(launcher, args):
+    result = launcher.run_launcher(*args)
+    assert result.returncode == 1
+    assert "cannot run in isolation" in result.stderr
+    assert not launcher.capture.exists()
+
+
+@pytest.mark.parametrize("args", [
+    (),
+    ("run", "hi"),
+    ("models",),
+    ("models", "--standalone"),
+    ("mcp", "list"),
+    ("plugin", "list"),
+    ("debug", "agents"),
+    ("acp",),
+    ("serve", "--port", "4097"),
+])
+def test_isolation_allows_server_commands(launcher, args):
+    _, command = launcher.captured(launcher.run_launcher(*args))
+    assert command[3:] == ["--", *args]
+
+
+def test_refusal_scanner_flag_values(launcher):
+    _, command = launcher.captured(launcher.run_launcher("--prompt", "serve"))
+    assert command[3:] == ["--", "--prompt", "serve"]
+    result = launcher.run_launcher("--session", "x", "pair")
+    assert result.returncode == 1
+    assert "cannot run in isolation" in result.stderr
+    assert not launcher.capture.exists()
+    _, command = launcher.captured(launcher.run_launcher("mcp", "add", "f", "--", "--server", "x"))
+    assert command[3:] == ["--", "mcp", "add", "f", "--", "--server", "x"]
+
+
+def test_config_dir_precedence(launcher):
+    import tempfile
+    with tempfile.TemporaryDirectory(dir=str(launcher.root)) as tmp:
+        launcher.env["XDG_CONFIG_HOME"] = tmp
+        options, _ = launcher.captured(launcher.run_launcher())
+        overlay_src = str(launcher.home / ".local/share/opencodebox/disabled-service.json")
+        assert has_seq(options, ["--ro-bind", f"{tmp}/opencode", f"{tmp}/opencode"])
+        assert has_seq(options, ["--ro-bind", overlay_src, f"{tmp}/opencode/service.json"])
+    with tempfile.TemporaryDirectory(dir=str(launcher.root)) as tmp2:
+        launcher.env["XDG_CONFIG_HOME"] = tmp2
+        launcher.env["OPENCODE_CONFIG_DIR"] = tmp2 + "/custom"
+        options, _ = launcher.captured(launcher.run_launcher())
+        overlay_src = str(launcher.home / ".local/share/opencodebox/disabled-service.json")
+        assert has_seq(options, ["--ro-bind", overlay_src, f"{tmp2}/custom/service.json"])
+    launcher.env.pop("XDG_CONFIG_HOME", None)
+    launcher.env["OPENCODE_CONFIG_DIR"] = str(launcher.home)
+    result = launcher.run_launcher()
+    assert result.returncode == 1
+    assert "sensitive" in result.stderr
+
+
+def test_help_mentions_isolation(launcher):
+    result = launcher.run_launcher("--help")
+    assert result.returncode == 0, result.stderr
+    assert "Isolation:" in result.stdout

@@ -30,6 +30,13 @@ Options:
   --version, -v                Show version information
   --help, -h                   Show this help message
 
+Isolation:
+  OpenCode 2 always runs fully isolated: every command gets a private
+  server inside the sandbox. 'pair', 'service', 'serve --service',
+  'serve --stdio', '--server', 'upgrade' and 'uninstall' are refused;
+  run them with 'opencode' on the host instead (web UI: 'opencodebox
+  serve --port N', then open the printed URL in the host browser).
+
 Examples:
   opencodebox --with ../app-backend
   opencodebox --with /mnt/data:/workspace/data
@@ -38,7 +45,6 @@ Examples:
 EOF
     exit 0
 }
-
 # Helper to check if a path is sensitive (or an ancestor of one)
 is_sensitive_path() {
     local path="$1"
@@ -276,6 +282,54 @@ exec {GROUP_FD}< <(printf '%s:x:%s:\n' "$GROUP_NAME" "$GROUP_ID")
 
 # Restore remaining args for opencode
 set -- "${REMAINING_ARGS[@]}"
+# OpenCode v2 isolation: the server must always run inside the sandbox.
+# Refuse commands that would attach to, manage, or register a host service.
+_iso_subcommand=""
+_iso_skip_next=0
+_iso_serve_service=0
+_iso_serve_stdio=0
+for _iso_tok in "$@"; do
+    if [[ $_iso_skip_next -eq 1 ]]; then _iso_skip_next=0; continue; fi
+    case "$_iso_tok" in
+        --) break ;;
+        --server|--server=*)
+            echo "Error: '--server' cannot run in isolation: it connects to a server outside the sandbox." >&2
+            exit 1 ;;
+        --session|--prompt|-s) _iso_skip_next=1 ;;
+        --service|--service=*) _iso_serve_service=1 ;;
+        --stdio|--stdio=*) _iso_serve_stdio=1 ;;
+        -*) ;;
+        *)
+            if [[ -z "$_iso_subcommand" ]]; then
+                case "$_iso_tok" in
+                    upgrade|update|uninstall|acp|api|debug|auth|mcp|plugin|models|stats|mini|run|session|service|reload|pair|serve)
+                        _iso_subcommand="$_iso_tok" ;;
+                esac
+            fi ;;
+    esac
+done
+unset _iso_tok
+case "$_iso_subcommand" in
+    pair)
+        echo "Error: 'pair' cannot run in isolation: it requires the background service. Use 'opencodebox serve --port N' and open the printed URL in your browser instead." >&2
+        exit 1 ;;
+    service)
+        echo "Error: 'service' cannot run in isolation: it manages the host background service. Run 'opencode service ...' on the host instead." >&2
+        exit 1 ;;
+    upgrade|update|uninstall)
+        echo "Error: '$_iso_subcommand' cannot run in isolation: it modifies the host installation. Run 'opencode $_iso_subcommand' on the host instead." >&2
+        exit 1 ;;
+    serve)
+        if [[ $_iso_serve_service -eq 1 ]]; then
+            echo "Error: 'serve --service' cannot run in isolation: it registers a background service that would die with the sandbox. Drop '--service' to run the server in the foreground." >&2
+            exit 1
+        fi
+        if [[ $_iso_serve_stdio -eq 1 ]]; then
+            echo "Error: 'serve --stdio' cannot run in isolation: it is an internal server mode. Drop '--stdio' to run the server in the foreground." >&2
+            exit 1
+        fi ;;
+esac
+unset _iso_subcommand _iso_skip_next _iso_serve_service _iso_serve_stdio
 
 # Prevent running from sensitive directories (but not for --help/--version which already exited)
 if is_sensitive_path "$PROJECT_DIR"; then
@@ -286,7 +340,18 @@ fi
 
 # Define paths for persistent data storage
 APP_DATA="$HOME/.local/share/opencode"
-CONFIG_DIR="$HOME/.config/opencode"
+if [[ -n "${OPENCODE_CONFIG_DIR:-}" ]]; then
+    CONFIG_DIR="$OPENCODE_CONFIG_DIR"
+elif [[ -n "${XDG_CONFIG_HOME:-}" ]]; then
+    CONFIG_DIR="$XDG_CONFIG_HOME/opencode"
+else
+    CONFIG_DIR="$HOME/.config/opencode"
+fi
+CONFIG_DIR="$(realpath -ms "$CONFIG_DIR")"
+if is_sensitive_path "$CONFIG_DIR"; then
+    echo "Error: service config directory '$CONFIG_DIR' points to or encloses a sensitive location." >&2
+    exit 1
+fi
 AGENTS_DIR="$HOME/.agents"
 CACHE_DIR="$HOME/.cache/opencode"
 
@@ -322,6 +387,12 @@ mkdir -p "$HOME/.local/state/opencode"
 # on missing sources, and opencode (v1 and v2) mkdirs ~/.cache/opencode/bin at
 # startup even though the cache tree is mounted read-only.
 mkdir -p "$CONFIG_DIR" "$AGENTS_DIR" "$CACHE_DIR/bin" "$APP_DATA"
+for _iso_seed in service.json service-local.json; do
+    if [[ ! -e "$CONFIG_DIR/$_iso_seed" ]]; then
+        printf '{}\n' > "$CONFIG_DIR/$_iso_seed"
+    fi
+done
+unset _iso_seed
 
 # Later bindings override earlier ones (--with binds come last = highest priority)
 declare -a BWRAP_ARGS=(
@@ -519,6 +590,24 @@ fi
 
 # Add extra binds from --with/--with-ro last so user choices have highest priority.
 BWRAP_ARGS+=("${EXTRA_BINDS[@]}")
+# OpenCode v2 isolation: force a private in-sandbox server for every command.
+# Later binds win, so the overlay is appended after EXTRA_BINDS.
+ISOD_OVERLAY_DIR="$HOME/.local/share/opencodebox"
+ISOD_OVERLAY_SRC="$ISOD_OVERLAY_DIR/disabled-service.json"
+mkdir -p "$ISOD_OVERLAY_DIR"
+printf '{\n  "disabled": true\n}\n' > "$ISOD_OVERLAY_SRC"
+for _iso_name in service.json service-local.json; do
+    BWRAP_ARGS+=(--ro-bind "$ISOD_OVERLAY_SRC" "$CONFIG_DIR/$_iso_name")
+done
+shopt -s nullglob
+for _iso_existing in "$CONFIG_DIR"/service-*.json; do
+    case "${_iso_existing##*/}" in
+        service.json|service-local.json) ;;
+        *) BWRAP_ARGS+=(--ro-bind "$ISOD_OVERLAY_SRC" "$_iso_existing") ;;
+    esac
+done
+shopt -u nullglob
+unset _iso_name _iso_existing
 
 # Execute bwrap with all arguments and the target command
 # mise activation runs inside sandbox only if host has mise installed
