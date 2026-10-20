@@ -46,6 +46,7 @@ Examples:
 EOF
     exit 0
 }
+
 # Helper to check if a path is sensitive (or an ancestor of one)
 is_sensitive_path() {
     local path="$1"
@@ -294,7 +295,7 @@ for _iso_tok in "$@"; do
     case "$_iso_tok" in
         --) break ;;
         --server|--server=*)
-            echo "Error: '--server' cannot run in isolation: it connects to a server outside the sandbox." >&2
+            echo "Error: '--server' cannot run in isolation: it connects to a server outside the sandbox. Run the command with 'opencode' on the host instead." >&2
             exit 1 ;;
         --session|--prompt|-s) _iso_skip_next=1 ;;
         --service|--service=*) _iso_serve_service=1 ;;
@@ -349,7 +350,11 @@ else
     CONFIG_DIR="$HOME/.config/opencode"
 fi
 CONFIG_DIR="$(realpath -ms "$CONFIG_DIR")"
-if is_sensitive_path "$CONFIG_DIR"; then
+# The lexical path is what gets mounted (the CLI resolves the same way), but a
+# symlink could still point at a sensitive location. Check the resolved path
+# too and refuse when either one is sensitive.
+CONFIG_DIR_RESOLVED="$(realpath -m "$CONFIG_DIR" 2>/dev/null || printf '%s' "$CONFIG_DIR")"
+if is_sensitive_path "$CONFIG_DIR" || is_sensitive_path "$CONFIG_DIR_RESOLVED"; then
     echo "Error: service config directory '$CONFIG_DIR' points to or encloses a sensitive location." >&2
     exit 1
 fi
@@ -382,20 +387,30 @@ OPCODE_SANDBOX_PATH="/opt/opencode/$OPCODE_LAUNCHER"
 
 # bwrap --bind hard-fails if the source is missing; opencode v2 keeps state under
 # ~/.local/state/opencode, which v1 users and fresh hosts may not have created yet.
-mkdir -p "$HOME/.local/state/opencode"
+STATE_DIR="$HOME/.local/state/opencode"
+mkdir -p "$STATE_DIR"
 
 # A fresh host has none of opencode's directories: bwrap --ro-bind/--bind fails
 # on missing sources, and opencode (v1 and v2) mkdirs ~/.cache/opencode/bin at
 # startup even though the cache tree is mounted read-only.
 mkdir -p "$CONFIG_DIR" "$AGENTS_DIR" "$CACHE_DIR/bin" "$APP_DATA"
 for _iso_seed in service.json service-local.json service-prod.json; do
-    if [[ ! -e "$CONFIG_DIR/$_iso_seed" ]]; then
+    # A dangling symlink must not be written through: it could create the file
+    # outside the config dir.
+    if [[ ! -e "$CONFIG_DIR/$_iso_seed" && ! -L "$CONFIG_DIR/$_iso_seed" ]]; then
         printf '{}\n' > "$CONFIG_DIR/$_iso_seed"
     fi
 done
 unset _iso_seed
 
-# Later bindings override earlier ones (--with binds come last = highest priority)
+# The host service registration in the state dir is masked with a ro-bind below.
+# bwrap creates a missing bind destination as an empty read-only file, which
+# would leave the host without a usable registration, so seed it up front.
+if [[ ! -e "$STATE_DIR/service.json" && ! -L "$STATE_DIR/service.json" ]]; then
+    printf '{}\n' > "$STATE_DIR/service.json"
+fi
+
+# Later bindings override earlier ones (the isolation overlay is appended last)
 declare -a BWRAP_ARGS=(
     # --- Isolation & Namespaces ---
     # Unshare PID/IPC/UTS namespaces for process isolation
@@ -443,7 +458,7 @@ declare -a BWRAP_ARGS=(
     # --- User Local Data ---
     --ro-bind "$HOME/.local" "$HOME/.local"
     --tmpfs "$HOME/.cache"                   # Writable cache (universal for uv, cargo, etc.)
-    --bind "$HOME/.local/state/opencode" "$HOME/.local/state/opencode" # Writable state (locks, etc.)
+    --bind "$STATE_DIR" "$STATE_DIR" # Writable state (locks, etc.)
 
     # --- OpenCode Specific (read-only) ---
     --ro-bind "$CONFIG_DIR" "$CONFIG_DIR"
@@ -589,26 +604,38 @@ if command -v mise >/dev/null 2>&1; then
     done
 fi
 
-# Add extra binds from --with/--with-ro last so user choices have highest priority.
+# User binds are added first; the isolation overlay binds below come after them
+# and therefore win, so the overlay always masks the service registration.
 BWRAP_ARGS+=("${EXTRA_BINDS[@]}")
 # OpenCode v2 isolation: force a private in-sandbox server for every command.
 # Later binds win, so the overlay is appended after EXTRA_BINDS.
-ISOD_OVERLAY_DIR="$HOME/.local/share/opencodebox"
-ISOD_OVERLAY_SRC="$ISOD_OVERLAY_DIR/disabled-service.json"
-mkdir -p "$ISOD_OVERLAY_DIR"
-printf '{\n  "disabled": true\n}\n' > "$ISOD_OVERLAY_SRC"
+ISOLATION_OVERLAY_DIR="$HOME/.local/share/opencodebox"
+ISOLATION_OVERLAY_SRC="$ISOLATION_OVERLAY_DIR/disabled-service.json"
+ISOLATION_STATE_MASK_SRC="$ISOLATION_OVERLAY_DIR/masked-service-state.json"
+mkdir -p "$ISOLATION_OVERLAY_DIR"
+printf '{\n  "disabled": true\n}\n' > "$ISOLATION_OVERLAY_SRC"
+# The host background-service registration lives in the state dir, which is
+# mounted read-write. Mask it so no sandbox process can learn the host server
+# URL/password and drive the host server from inside the sandbox.
+printf '{}\n' > "$ISOLATION_STATE_MASK_SRC"
 for _iso_name in service.json service-local.json service-prod.json; do
-    BWRAP_ARGS+=(--ro-bind "$ISOD_OVERLAY_SRC" "$CONFIG_DIR/$_iso_name")
+    BWRAP_ARGS+=(--ro-bind "$ISOLATION_OVERLAY_SRC" "$CONFIG_DIR/$_iso_name")
 done
 shopt -s nullglob
 for _iso_existing in "$CONFIG_DIR"/service-*.json; do
     case "${_iso_existing##*/}" in
-        service.json|service-local.json|service-prod.json) ;;
-        *) BWRAP_ARGS+=(--ro-bind "$ISOD_OVERLAY_SRC" "$_iso_existing") ;;
+        service-local.json|service-prod.json) ;;
+        *) BWRAP_ARGS+=(--ro-bind "$ISOLATION_OVERLAY_SRC" "$_iso_existing") ;;
     esac
 done
+# Mask the host service registration in the state dir as well.
+BWRAP_ARGS+=(--ro-bind "$ISOLATION_STATE_MASK_SRC" "$STATE_DIR/service.json")
+for _iso_state_existing in "$STATE_DIR"/service*.json; do
+    [[ "${_iso_state_existing##*/}" == "service.json" ]] && continue
+    BWRAP_ARGS+=(--ro-bind "$ISOLATION_STATE_MASK_SRC" "$_iso_state_existing")
+done
 shopt -u nullglob
-unset _iso_name _iso_existing
+unset _iso_name _iso_existing _iso_state_existing
 
 # Execute bwrap with all arguments and the target command
 # mise activation runs inside sandbox only if host has mise installed

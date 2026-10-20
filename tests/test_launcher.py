@@ -94,12 +94,19 @@ def test_with_ro_custom_destination_is_last(launcher):
     extra.mkdir()
     options, _ = launcher.captured(launcher.run_launcher("--with-ro", f"{extra}:/custom/path"))
     overlay_src = str(launcher.home / ".local/share/opencodebox/disabled-service.json")
+    state_mask_src = str(launcher.home / ".local/share/opencodebox/masked-service-state.json")
     config = str(launcher.home / ".config/opencode")
-    tail = ["--ro-bind", overlay_src, f"{config}/service.json",
-            "--ro-bind", overlay_src, f"{config}/service-local.json",
-            "--ro-bind", overlay_src, f"{config}/service-prod.json"]
+    state = str(launcher.home / ".local/state/opencode")
+    expected_tail = [
+        "--ro-bind", overlay_src, f"{config}/service.json",
+        "--ro-bind", overlay_src, f"{config}/service-local.json",
+        "--ro-bind", overlay_src, f"{config}/service-prod.json",
+        "--ro-bind", state_mask_src, f"{state}/service.json",
+    ]
+    assert options[-len(expected_tail):] == expected_tail
     triples = seqs(options, 3)
-    assert triples.index(["--ro-bind", str(extra), "/custom/path"]) < len(options) - len(tail)
+    extra_idx = triples.index(["--ro-bind", str(extra), "/custom/path"])
+    assert extra_idx < triples.index(["--ro-bind", overlay_src, f"{config}/service.json"])
 
 
 def test_seccomp_fd_forwarded_when_filter_present(launcher):
@@ -267,6 +274,37 @@ def test_overlay_preserves_existing_service_config(launcher):
     assert has_seq(options, ["--ro-bind", overlay_src, f"{config}/service.json"])
 
 
+def test_overlay_does_not_write_through_dangling_symlink(launcher):
+    # A dangling symlink at the destination must never be written through:
+    # the seeded file would land outside the config dir.
+    config = launcher.home / ".config/opencode"
+    config.mkdir(parents=True)
+    outside = launcher.root / "outside/service.json"
+    outside.parent.mkdir()
+    (config / "service.json").symlink_to(outside)
+    launcher.captured(launcher.run_launcher())
+    assert not outside.exists(), "launcher must not write through a dangling symlink"
+    assert (config / "service.json").is_symlink(), "the symlink must be left alone"
+
+
+def test_state_service_registration_is_masked(launcher):
+    # The host background-service registration lives in the state dir, which is
+    # mounted read-write. It must be masked, otherwise a sandbox process could
+    # read the host server URL/password and drive the host server.
+    options, _ = launcher.captured(launcher.run_launcher())
+    state = launcher.home / ".local/state/opencode"
+    mask_src = launcher.home / ".local/share/opencodebox/masked-service-state.json"
+    assert mask_src.read_text() == '{}\n'
+    mask_seq = ["--ro-bind", str(mask_src), f"{state}/service.json"]
+    assert has_seq(options, mask_seq)
+    triples = seqs(options, 3)
+    state_bind = ["--bind", str(state), str(state)]
+    assert state_bind in triples
+    # Later binds win, so the mask has to come after the state dir bind.
+    assert triples.index(mask_seq) > triples.index(state_bind)
+    assert (state / "service.json").read_text() == '{}\n'
+
+
 def test_overlay_prod_channel_covered(launcher):
     # A prod-channel binary reads service-prod.json; on a fresh host the file
     # is absent upstream, which reads as {} (not disabled) and would take the
@@ -297,8 +335,11 @@ def test_overlay_prod_channel_covered(launcher):
     ("serve", "--service"),
     ("serve", "--stdio"),
     ("--server", "http://127.0.0.1:1"),
+    ("--server=http://127.0.0.1:1",),
     ("models", "--server", "http://127.0.0.1:1"),
     ("run", "--title", "--server"),
+    ("serve", "--service=false"),
+    ("serve", "--stdio=false"),
 ])
 def test_isolation_refusals(launcher, args):
     result = launcher.run_launcher(*args)
@@ -319,8 +360,18 @@ def test_isolation_refusals(launcher, args):
     ("serve", "--port", "4097"),
 ])
 def test_isolation_allows_server_commands(launcher, args):
-    _, command = launcher.captured(launcher.run_launcher(*args))
+    options, command = launcher.captured(launcher.run_launcher(*args))
     assert command[3:] == ["--", *args]
+    # Allowed commands are still isolated: the service registration must stay
+    # masked in the config dir and in the state dir.
+    overlay_src = str(launcher.home / ".local/share/opencodebox/disabled-service.json")
+    state_mask_src = str(launcher.home / ".local/share/opencodebox/masked-service-state.json")
+    config = str(launcher.home / ".config/opencode")
+    state = str(launcher.home / ".local/state/opencode")
+    assert has_seq(options, ["--ro-bind", overlay_src, f"{config}/service.json"])
+    assert has_seq(options, ["--ro-bind", overlay_src, f"{config}/service-local.json"])
+    assert has_seq(options, ["--ro-bind", overlay_src, f"{config}/service-prod.json"])
+    assert has_seq(options, ["--ro-bind", state_mask_src, f"{state}/service.json"])
 
 
 def test_refusal_scanner_flag_values(launcher):
@@ -332,6 +383,14 @@ def test_refusal_scanner_flag_values(launcher):
     assert not launcher.capture.exists()
     _, command = launcher.captured(launcher.run_launcher("mcp", "add", "f", "--", "--server", "x"))
     assert command[3:] == ["--", "mcp", "add", "f", "--", "--server", "x"]
+
+
+def test_session_flag_value_is_not_a_subcommand(launcher):
+    # -s takes a session id: a refused word in that position must not be
+    # mistaken for a subcommand.
+    for value in ("pair", "service", "serve", "upgrade"):
+        _, command = launcher.captured(launcher.run_launcher("-s", value))
+        assert command[3:] == ["--", "-s", value]
 
 
 def test_config_dir_precedence(launcher):
@@ -353,6 +412,20 @@ def test_config_dir_precedence(launcher):
     result = launcher.run_launcher()
     assert result.returncode == 1
     assert "sensitive" in result.stderr
+
+
+def test_config_dir_symlink_to_sensitive_path_rejected(launcher):
+    # The config dir is mounted lexically, but a symlink could still point at
+    # a sensitive location: the resolved path must be checked too.
+    ssh = launcher.home / ".ssh"
+    ssh.mkdir(mode=0o700)
+    link = launcher.home / "sshlink"
+    link.symlink_to(ssh)
+    launcher.env["OPENCODE_CONFIG_DIR"] = str(link)
+    result = launcher.run_launcher()
+    assert result.returncode == 1
+    assert "sensitive" in result.stderr
+    assert not launcher.capture.exists()
 
 
 def test_help_mentions_isolation(launcher):
