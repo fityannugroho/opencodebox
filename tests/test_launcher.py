@@ -275,16 +275,76 @@ def test_overlay_preserves_existing_service_config(launcher):
 
 
 def test_overlay_does_not_write_through_dangling_symlink(launcher):
-    # A dangling symlink at the destination must never be written through:
-    # the seeded file would land outside the config dir.
+    # A dangling symlink at an overlay destination would make bwrap abort with
+    # a cryptic error: the launcher refuses it up front and never writes
+    # through it.
     config = launcher.home / ".config/opencode"
     config.mkdir(parents=True)
     outside = launcher.root / "outside/service.json"
     outside.parent.mkdir()
     (config / "service.json").symlink_to(outside)
-    launcher.captured(launcher.run_launcher())
+    result = launcher.run_launcher()
+    assert result.returncode == 1
+    assert "symlink" in result.stderr
+    assert not launcher.capture.exists()
     assert not outside.exists(), "launcher must not write through a dangling symlink"
     assert (config / "service.json").is_symlink(), "the symlink must be left alone"
+
+
+def test_state_dangling_symlink_is_refused(launcher):
+    # The state dir registration is masked the same way, so a dangling
+    # symlink there is refused instead of aborting bwrap.
+    state = launcher.home / ".local/state/opencode"
+    state.mkdir(parents=True)
+    outside = launcher.root / "outside/state-service.json"
+    (state / "service.json").symlink_to(outside)
+    result = launcher.run_launcher()
+    assert result.returncode == 1
+    assert "symlink" in result.stderr
+    assert not launcher.capture.exists()
+    assert not outside.exists(), "launcher must not write through a dangling symlink"
+    assert (state / "service.json").is_symlink(), "the symlink must be left alone"
+
+
+def test_masked_wildcard_dangling_symlink_is_refused(launcher):
+    # Every masked destination is checked, not only the known file names.
+    config = launcher.home / ".config/opencode"
+    config.mkdir(parents=True)
+    outside = launcher.root / "outside/service-old.json"
+    (config / "service-old.json").symlink_to(outside)
+    result = launcher.run_launcher()
+    assert result.returncode == 1
+    assert "symlink" in result.stderr
+    assert not launcher.capture.exists()
+    assert not outside.exists(), "launcher must not write through a dangling symlink"
+    assert (config / "service-old.json").is_symlink(), "the symlink must be left alone"
+
+
+@pytest.mark.parametrize("name", ["disabled-service.json", "masked-service-state.json"])
+def test_overlay_source_is_not_written_through_symlink(launcher, name):
+    # The generated overlay files are written atomically: a symlink at the
+    # destination is replaced, never written through.
+    overlay = launcher.home / ".local/share/opencodebox"
+    overlay.mkdir(parents=True)
+    outside = launcher.root / "outside/overlay.json"
+    (overlay / name).symlink_to(outside)
+    launcher.captured(launcher.run_launcher())
+    assert not outside.exists(), "launcher must not write through the overlay symlink"
+    assert not (overlay / name).is_symlink(), "the symlink must be replaced"
+    assert (overlay / name).is_file()
+
+
+def test_overlay_source_keeps_existing_target_content(launcher):
+    # An existing file behind the overlay symlink must keep its content.
+    overlay = launcher.home / ".local/share/opencodebox"
+    overlay.mkdir(parents=True)
+    outside = launcher.root / "outside/overlay.json"
+    outside.parent.mkdir()
+    outside.write_text("keep me\n")
+    (overlay / "disabled-service.json").symlink_to(outside)
+    launcher.captured(launcher.run_launcher())
+    assert outside.read_text() == "keep me\n"
+    assert (overlay / "disabled-service.json").read_text() == '{\n  "disabled": true\n}\n'
 
 
 def test_state_service_registration_is_masked(launcher):

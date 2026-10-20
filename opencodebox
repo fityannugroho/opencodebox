@@ -55,6 +55,32 @@ is_sensitive_path() {
        "$path" == "$HOME" || "$HOME" == "$path"/* || "$path" == "/" ]]
 }
 
+# Helper to refuse a dangling symlink at an overlay destination: bwrap would
+# abort with a cryptic error, and the symlink must not be written through
+check_overlay_destination() {
+    local path="$1"
+
+    if [[ -L "$path" && ! -e "$path" ]]; then
+        echo "Error: '$path' is a dangling symlink; remove it before running opencodebox." >&2
+        exit 1
+    fi
+}
+
+# Helper to write a generated file without following a symlink at the
+# destination: the content goes to a fresh temp file that is moved into place
+write_generated_file() {
+    local path="$1"
+    local format="$2"
+    local tmp
+
+    tmp="$(mktemp "$(dirname "$path")/.opencodebox.XXXXXX")" || return 1
+    if ! printf "$format" > "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    mv -f "$tmp" "$path"
+}
+
 # Prerequisite checks - fail fast with helpful messages
 check_prerequisites() {
     local missing=0
@@ -390,6 +416,20 @@ OPCODE_SANDBOX_PATH="/opt/opencode/$OPCODE_LAUNCHER"
 STATE_DIR="$HOME/.local/state/opencode"
 mkdir -p "$STATE_DIR"
 
+# The overlay binds replace these paths inside the sandbox; a dangling
+# symlink there would make bwrap abort, so refuse it up front.
+check_overlay_destination "$CONFIG_DIR/service.json"
+check_overlay_destination "$CONFIG_DIR/service-local.json"
+check_overlay_destination "$CONFIG_DIR/service-prod.json"
+check_overlay_destination "$STATE_DIR/service.json"
+# The remaining masked destinations are picked up by glob below.
+shopt -s nullglob
+for _iso_masked in "$CONFIG_DIR"/service-*.json "$STATE_DIR"/service*.json; do
+    check_overlay_destination "$_iso_masked"
+done
+shopt -u nullglob
+unset _iso_masked
+
 # A fresh host has none of opencode's directories: bwrap --ro-bind/--bind fails
 # on missing sources, and opencode (v1 and v2) mkdirs ~/.cache/opencode/bin at
 # startup even though the cache tree is mounted read-only.
@@ -613,11 +653,17 @@ ISOLATION_OVERLAY_DIR="$HOME/.local/share/opencodebox"
 ISOLATION_OVERLAY_SRC="$ISOLATION_OVERLAY_DIR/disabled-service.json"
 ISOLATION_STATE_MASK_SRC="$ISOLATION_OVERLAY_DIR/masked-service-state.json"
 mkdir -p "$ISOLATION_OVERLAY_DIR"
-printf '{\n  "disabled": true\n}\n' > "$ISOLATION_OVERLAY_SRC"
+write_generated_file "$ISOLATION_OVERLAY_SRC" '{\n  "disabled": true\n}\n' || {
+    echo "Error: cannot write '$ISOLATION_OVERLAY_SRC'." >&2
+    exit 1
+}
 # The host background-service registration lives in the state dir, which is
 # mounted read-write. Mask it so no sandbox process can learn the host server
 # URL/password and drive the host server from inside the sandbox.
-printf '{}\n' > "$ISOLATION_STATE_MASK_SRC"
+write_generated_file "$ISOLATION_STATE_MASK_SRC" '{}\n' || {
+    echo "Error: cannot write '$ISOLATION_STATE_MASK_SRC'." >&2
+    exit 1
+}
 for _iso_name in service.json service-local.json service-prod.json; do
     BWRAP_ARGS+=(--ro-bind "$ISOLATION_OVERLAY_SRC" "$CONFIG_DIR/$_iso_name")
 done
