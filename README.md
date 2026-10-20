@@ -124,7 +124,7 @@ The directory holding the `opencode` binary is mounted at `/opt/opencode` and ex
 - Self-upgrading or installing plugins from inside the sandbox is not supported for the read-only layout: `opencode upgrade` writes to the install tree, and `opencode plugin add` updates the global configuration under `~/.config/opencode` (mounted read-only) — do both on the host instead (e.g. `mise upgrade opencode`).
 - On first run the launcher creates opencode's config, agents, cache (including the helper `bin` directory), data and state directories when they are missing, so a fresh host does not fail at the bind step. OpenCode 2 starts from there; OpenCode 1 may still need its config seeded on the host (it writes `.gitignore` into `~/.config/opencode`, which is mounted read-only).
 - Only `node_modules/.bin` shims are relocated. Global `bin` shims from `npm|pnpm|bun install -g` and symlinks whose target lies outside the mounted roots still fail with `not found` (exit 127).
-- OpenCode 2 runs fully isolated: every command gets a private in-sandbox server — the launcher overlays a generated `{"disabled": true}` service config so the client can never attach to a host service — while sessions, credentials, and TUI state stay shared (the config directory is shared read-only). Commands needing the host service (`pair`, `service`, `serve --service`/`--stdio`, `--server`, `upgrade`, `update`, `uninstall`) are refused; each error names the alternative.
+- OpenCode 2 runs fully isolated: every command gets a private in-sandbox server — the launcher overlays a generated `{"disabled": true}` service config so the client can never attach to a host service — and masks the host service registration in the state directory, so nothing in the sandbox can read the host server URL/password — while sessions, credentials, and TUI state stay shared (the config directory is shared read-only). Commands needing the host service (`pair`, `service`, `serve --service`/`--stdio`, `--server`, `upgrade`, `update`, `uninstall`) are refused; each error names the alternative.
 
 ### Conditional Tool Mounts (Requires Tool Installed on Host)
 
@@ -155,13 +155,13 @@ If `SSH_AUTH_SOCK` points to a valid socket, `opencodebox` forwards that socket 
 
 For Git SSH signing, use a public key path such as `~/.ssh/id_ed25519.pub`, or an inline `key::ssh-ed25519 ...` value. Validates and sanitizes `.pub` files (rejects hardlinks, multi-line files; validates key type, base64 format, and OpenSSH key structure with `ssh-keygen`). The sandbox receives sanitized key material only (`<key-type> <key-data>`), so comments or extra file content are not exposed.
 
-For Git-over-SSH network operations, `known_hosts` is mounted read-only when available. This allows host verification without exposing private keys. `~/.ssh/config` is not mounted, and no path under `~/.ssh` can be bound (sensitive-path guard).
+For Git-over-SSH network operations, `known_hosts` is mounted read-only when available. This allows host verification without exposing private keys. `~/.ssh/config` is not mounted, and user-supplied binds under `~/.ssh` are rejected by the sensitive-path guard (the launcher still mounts `known_hosts` and sanitized `*.pub` itself).
 
 For local SSH signature verification, the configured `gpg.ssh.allowedSignersFile` is mounted read-only when it is an absolute regular file under `$HOME`; otherwise it is skipped with a warning.
 
 > **Note:** `.pub` files are validated on the already-open file descriptor (via `/proc/self/fd`), so the validated content cannot be swapped afterwards.
 
-Git-over-SSH network operations may still need explicit read-only binds for other files in custom setups, but every path under `~/.ssh` is rejected by the sensitive-path guard. User-provided binds and the current project bind can expose private keys if they include such files, so avoid binding `~/.ssh` wholesale.
+Git-over-SSH network operations may still need explicit read-only binds for other files in custom setups, but every user-supplied path under `~/.ssh` is rejected by the sensitive-path guard. User-provided binds and the current project bind can expose private keys if they include such files, so avoid binding `~/.ssh` wholesale.
 
 Forwarding an agent still lets sandboxed processes ask the agent to authenticate or sign while the socket is available. Use a dedicated signing key and consider `ssh-add -c -t 1h ~/.ssh/signing_key` for confirmation and expiry.
 
