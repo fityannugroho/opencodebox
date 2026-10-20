@@ -33,9 +33,10 @@ Options:
 Isolation:
   OpenCode 2 always runs fully isolated: every command gets a private
   server inside the sandbox. 'pair', 'service', 'serve --service',
-  'serve --stdio', '--server', 'upgrade' and 'uninstall' are refused;
-  run them with 'opencode' on the host instead (web UI: 'opencodebox
-  serve --port N', then open the printed URL in the host browser).
+  'serve --stdio', '--server', 'upgrade', 'update' and 'uninstall' are
+  refused; the error message explains why and, where there is one,
+  names the alternative (web UI: 'opencodebox serve --port N', then open
+  the printed URL in the host browser).
 
 Examples:
   opencodebox --with ../app-backend

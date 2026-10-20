@@ -359,3 +359,24 @@ def test_help_mentions_isolation(launcher):
     result = launcher.run_launcher("--help")
     assert result.returncode == 0, result.stderr
     assert "Isolation:" in result.stdout
+
+
+# Every command/flag the refusal scanner rejects must also be listed in the
+# help text: a refusal the user cannot discover up front is a help bug.
+REFUSED_BY_SCANNER = [
+    "pair",
+    "service",
+    "serve --service",
+    "serve --stdio",
+    "--server",
+    "upgrade",
+    "update",
+    "uninstall",
+]
+
+
+def test_help_lists_every_refused_command(launcher):
+    result = launcher.run_launcher("--help")
+    assert result.returncode == 0, result.stderr
+    missing = [name for name in REFUSED_BY_SCANNER if f"'{name}'" not in result.stdout]
+    assert not missing, f"help does not mention refused command(s): {missing}"
