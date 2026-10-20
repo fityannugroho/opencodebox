@@ -36,7 +36,7 @@ opencodebox --version
 
 ## Usage
 
-`opencodebox` is a wrapper for the `opencode` command. All arguments are passed through to `opencode` inside the sandbox.
+`opencodebox` is a wrapper for the `opencode` command. All arguments are passed through to `opencode` inside the sandbox, except the commands OpenCode 2 refuses in isolation (see `### OpenCode Launcher Mount`).
 
 ```bash
 opencodebox [OPTIONS] [OPENCODE_ARGS...]
@@ -102,8 +102,8 @@ opencodebox --with /data --with-ro /config serve
 - `$HOME/.cache/opencode` - OpenCode cache
 - `$HOME/.ssh/*.pub` - Sanitized OpenSSH public key material, when `$HOME/.ssh` is not a symlink
 - `$HOME/.ssh/known_hosts` - SSH host key, read-only, for Git-over-SSH host verification
-- `gpg.ssh.allowedSignersFile` - Configured SSH allowed signers file (if configured)
-- OpenCode: `.config/opencode`, `.agents`
+- `gpg.ssh.allowedSignersFile` - Configured SSH allowed signers file (if configured and under `$HOME`)
+- OpenCode: config dir (`$OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`), `.agents`
 
 **Read-Write:**
 - Current project directory (`$PWD`)
@@ -119,12 +119,12 @@ opencodebox --with /data --with-ro /config serve
 
 The directory holding the `opencode` binary is mounted at `/opt/opencode` and executed from there (read-write, as before). When `opencode` is an npm-style shim inside a `<...>/node_modules/.bin` directory, the sandbox instead mounts that `node_modules` directory **read-only** and executes the shim at `/opt/opencode/.bin/opencode`, because such shims resolve their target relative to their own location.
 
-- The shim must resolve its target with exactly one `..` level (as with mise's npm backend/aube).
-- A shim outside `node_modules` (for example `$HOME/.bin`) is not relocated: it keeps the old mount, never binds `$HOME`, and prints a warning; expect `not found` (exit 127) for relative-target shims.
+- The shim's target must resolve with exactly one `..` level (as with mise's npm backend/aube); a deeper path escapes the mounted root and fails.
+- A shim outside `node_modules` (for example `$HOME/.bin`) is not relocated: it keeps the old mount, which binds only the shim's own directory, and prints a warning; expect `not found` (exit 127) for relative-target shims.
 - Self-upgrading or installing plugins from inside the sandbox is not supported for the read-only layout: `opencode upgrade` writes to the install tree, and `opencode plugin add` updates the global configuration under `~/.config/opencode` (mounted read-only) — do both on the host instead (e.g. `mise upgrade opencode`).
-- On first run the launcher creates opencode's config, agents, cache (including the helper `bin` directory) and data directories when they are missing, so a fresh host does not fail at the bind step. OpenCode 2 starts from there; OpenCode 1 may still need its config seeded on the host (it writes `.gitignore` into `~/.config/opencode`, which is mounted read-only).
+- On first run the launcher creates opencode's config, agents, cache (including the helper `bin` directory), data and state directories when they are missing, so a fresh host does not fail at the bind step. OpenCode 2 starts from there; OpenCode 1 may still need its config seeded on the host (it writes `.gitignore` into `~/.config/opencode`, which is mounted read-only).
 - Only `node_modules/.bin` shims are relocated. Global `bin` shims from `npm|pnpm|bun install -g` and symlinks whose target lies outside the mounted roots still fail with `not found` (exit 127).
-- OpenCode 2 runs fully isolated: every command gets a private in-sandbox server, while sessions, credentials, and TUI state stay shared. Commands needing the host service (`pair`, `service`, `serve --service`/`--stdio`, `--server`, `upgrade`, `uninstall`) are refused with a redirect.
+- OpenCode 2 runs fully isolated: every command gets a private in-sandbox server — the launcher overlays a generated `{"disabled": true}` service config so the client can never attach to a host service — while sessions, credentials, and TUI state stay shared (the config directory is shared read-only). Commands needing the host service (`pair`, `service`, `serve --service`/`--stdio`, `--server`, `upgrade`, `update`, `uninstall`) are refused; each error names the alternative.
 
 ### Conditional Tool Mounts (Requires Tool Installed on Host)
 
@@ -139,7 +139,7 @@ Each tool is mounted only when `command -v <tool>` succeeds on the host. If the 
 | **pipenv** | — | `~/.local/share/virtualenvs` |
 | **Rust/Cargo** | `~/.rustup`, `~/.cargo/bin`, `~/.cargo/config.toml` | `~/.cargo/registry` |
 | **Git** | `~/.gitconfig` | — |
-| **Mise** | `~/.config/mise`, `~/.local/share/mise`, `~/.cache/mise` | — |
+| **Mise** | `~/.config/mise`, `~/.local/share/mise`, `~/.cache/mise` (or `MISE_CONFIG_DIR`/`MISE_DATA_DIR`/`MISE_CACHE_DIR` when set; a sensitive directory is skipped with a warning) | — |
 
 ## Security Restrictions
 
@@ -153,15 +153,15 @@ Each tool is mounted only when `command -v <tool>` succeeds on the host. If the 
 
 If `SSH_AUTH_SOCK` points to a valid socket, `opencodebox` forwards that socket into the sandbox. This allows SSH commit signing with keys already loaded by `ssh-add` on the host. This feature does not mount private SSH keys into the sandbox.
 
-For Git SSH signing, use a public key path such as `~/.ssh/id_ed25519.pub`, or an inline `key::ssh-ed25519 ...` value. Validates and sanitizes `.pub` files (rejects symlinks, hardlinks, multi-line files; validates key type, base64 format, and OpenSSH key structure with `ssh-keygen`). The sandbox receives sanitized key material only (`<key-type> <key-data>`), so comments or extra file content are not exposed.
+For Git SSH signing, use a public key path such as `~/.ssh/id_ed25519.pub`, or an inline `key::ssh-ed25519 ...` value. Validates and sanitizes `.pub` files (rejects hardlinks, multi-line files; validates key type, base64 format, and OpenSSH key structure with `ssh-keygen`). The sandbox receives sanitized key material only (`<key-type> <key-data>`), so comments or extra file content are not exposed.
 
-For Git-over-SSH network operations, `known_hosts` is mounted read-only when available. This allows host verification without exposing private keys. `~/.ssh/config` is not mounted by default because it can contain broader host-specific behavior; bind it explicitly with `--with-ro ~/.ssh/config` only when needed.
+For Git-over-SSH network operations, `known_hosts` is mounted read-only when available. This allows host verification without exposing private keys. `~/.ssh/config` is not mounted, and no path under `~/.ssh` can be bound (sensitive-path guard).
 
-For local SSH signature verification, the configured `gpg.ssh.allowedSignersFile` is mounted read-only when it is an absolute regular file.
+For local SSH signature verification, the configured `gpg.ssh.allowedSignersFile` is mounted read-only when it is an absolute regular file under `$HOME`; otherwise it is skipped with a warning.
 
-> **Note:** `.pub` validation occurs at script startup. There is a small TOCTOU window between reading and validating each `.pub` file; this is an accepted limitation of shell scripting.
+> **Note:** `.pub` files are validated on the already-open file descriptor (via `/proc/self/fd`), so the validated content cannot be swapped afterwards.
 
-Git-over-SSH network operations may still need explicit read-only binds for files such as `~/.ssh/config` in custom setups. User-provided binds and the current project bind can expose private keys if they include those files, so avoid binding `~/.ssh` wholesale.
+Git-over-SSH network operations may still need explicit read-only binds for other files in custom setups, but every path under `~/.ssh` is rejected by the sensitive-path guard. User-provided binds and the current project bind can expose private keys if they include such files, so avoid binding `~/.ssh` wholesale.
 
 Forwarding an agent still lets sandboxed processes ask the agent to authenticate or sign while the socket is available. Use a dedicated signing key and consider `ssh-add -c -t 1h ~/.ssh/signing_key` for confirmation and expiry.
 
