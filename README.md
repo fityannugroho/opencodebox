@@ -147,6 +147,7 @@ Each tool is mounted only when `command -v <tool>` succeeds on the host. If the 
 
 - **Project directory**: Cannot run from `$HOME`, `~/.ssh`, `~/.gnupg`, or their ancestors. Use a dedicated project directory.
 - **Bind mounts**: `--with` and `--with-ro` reject paths that point to or enclose sensitive locations (`$HOME`, `~/.ssh`, `~/.gnupg`).
+- **State directory**: `~/.local/state/opencode` is mounted read-write so that locks and TUI state stay shared between the sandbox and the host. The launcher masks the host background-service registration inside the sandbox, but a sandboxed process can still create files in that directory, and the host client reads some of them (including the pty runtime registration). Treat that directory as shared state, not as a trust boundary.
 - **SSH directory**: `~/.ssh` must have permissions `0700`. Fix with: `chmod 700 ~/.ssh`
 
 ## SSH Agent and Git Signing
