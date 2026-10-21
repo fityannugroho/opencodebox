@@ -10,6 +10,7 @@ Run OpenCode inside a bubblewrap sandbox for security isolation.
 - **Controlled Filesystem**: Most system filesystem mounted read-only
 - **Custom Bind Mounts**: Add read-write or read-only access with `--with` and `--with-ro`
 - **Mise Support**: Integrated with [mise](https://mise.jdx.dev) for tool management
+- **Direct GPU Access (Opt-In)**: Expose NVIDIA/DRM GPU devices with `--gpu`
 - **SSH Agent Forwarding**: Supports SSH commit signing through the host `ssh-agent`
 - **Seccomp Sandbox Filter**: Mitigates kernel privilege escalation vulnerabilities (see [details](#seccomp-sandbox-filter))
 
@@ -50,6 +51,7 @@ opencodebox [OPTIONS] [OPENCODE_ARGS...]
 
 - `--with /host[:/sandbox]` - Bind host path read-write to sandbox
 - `--with-ro /host[:/sandbox]` - Bind host path read-only to sandbox
+- `--gpu` - Expose host GPU devices for direct sandbox workloads; see [direct GPU access](#direct-gpu-access-opt-in)
 
 These options allow you to specify additional directories to mount inside the sandbox for read-write or read-only access.
 
@@ -74,7 +76,7 @@ opencodebox --with /data --with-ro /config serve
 
 ## How It Works
 
-1. Parse arguments (`--with`, `--with-ro`, `--version`, `--help`)
+1. Parse arguments (`--with`, `--with-ro`, `--gpu`, `--version`, `--help`)
 2. Check prerequisites (bwrap and opencode)
 3. Load seccomp sandbox filter (see [details](#seccomp-sandbox-filter))
 4. **Enforce security restrictions**:
@@ -150,6 +152,95 @@ Each tool is mounted only when `command -v <tool>` succeeds on the host. If the 
 - **State directory**: `~/.local/state/opencode` is mounted read-write so that locks and TUI state stay shared between the sandbox and the host. The launcher masks the host background-service registration inside the sandbox, but a sandboxed process can still create files in that directory, and the host client reads some of them (including the pty runtime registration). Treat that directory as shared state, not as a trust boundary.
 - **SSH directory**: `~/.ssh` must have permissions `0700`. Fix with: `chmod 700 ~/.ssh`
 
+## Direct GPU Access (Opt-In)
+
+`--gpu` exposes GPU devices to programs running **directly inside opencodebox**:
+
+```bash
+opencodebox --gpu
+```
+
+When testing a checkout, use `./opencodebox` rather than an older installed copy.
+Launch from your normal host environment: an existing sandbox without GPU
+mounts cannot forward devices it cannot see. No mounts are added to an already
+running session.
+
+### Devices and driver dependencies
+
+The switch discovers and mounts these existing character devices individually
+using bubblewrap's `--dev-bind` (not a bind of the entire host `/dev`):
+
+| Device family | Paths |
+|---|---|
+| NVIDIA GPUs | `/dev/nvidiaN` (numeric N) |
+| NVIDIA auxiliary devices | `/dev/nvidiactl`, `/dev/nvidia-uvm`, `/dev/nvidia-uvm-tools`, `/dev/nvidia-modeset`, `/dev/nvidia-caps/nvidia-capN` |
+| DRM GPUs (Intel/AMD/NVIDIA) | `/dev/dri/cardN`, `/dev/dri/renderDN` |
+| AMD compute | `/dev/kfd` |
+
+Note that `/dev/dri/cardN` also exposes the display/KMS interface, not just
+rendering; `/dev/dri/renderDN` is the render-only node. There is no per-device
+selection: both are mounted when present. NPU devices (`/dev/accel/*`) are out
+of scope.
+
+It requires at least one NVIDIA GPU or DRM card/render character device. It
+skips non-character files and symlinked device nodes, rejects symlinked GPU
+parent directories, and fails clearly when no GPU is found. These checks assume
+trusted host `/dev`; they do not authenticate device drivers or eliminate
+concurrent replacement races. Devices disappearing during launch cause a mount
+failure rather than silent partial access.
+
+GPU mode also mounts these **read-only, if present**:
+
+- `/sys`, preserving the host sysfs topology and its symlink relationships.
+- `/etc/ld.so.cache`, for host driver library discovery.
+- `/etc/OpenCL/vendors`, `/etc/vulkan/icd.d`, `/etc/glvnd/egl_vendor.d`.
+- `/proc/driver/nvidia`, when an NVIDIA GPU device was found.
+
+Driver libraries and `/usr/share` vendor manifests under `/usr` are already
+visible. The switch does not install CUDA, ROCm, PyTorch, or other SDKs. Libraries,
+cache entries, or manifests pointing outside the exposed filesystem may need
+explicit same-path `--with-ro` mounts. For example, a ROCm installation under
+`/opt/rocm` may require both that path and its versioned symlink target. Direct
+GPU access is not a guarantee of compatibility with every driver/SDK layout.
+
+### Verify and troubleshoot
+
+For NVIDIA, first ensure `nvidia-smi -L` works **on the host**. After launching
+with `--gpu`, run inside the new sandbox:
+
+```bash
+nvidia-smi -L
+# If a CUDA-enabled PyTorch environment is already installed:
+python -c 'import torch; print(torch.cuda.is_available()); print(torch.cuda.device_count())'
+```
+
+`nvidia-smi` succeeding alone does not prove a CUDA workload works. When NVIDIA
+GPU nodes exist but `/dev/nvidia-uvm` is absent, the launcher warns that CUDA may
+fail. Initialize the NVIDIA/UVM driver using your distribution's normal host
+setup procedure, then restart opencodebox. The launcher never loads modules,
+runs `sudo`, changes device permissions, or initializes GPUs automatically.
+
+Existing host permissions, ACLs, supplementary group access, SELinux rules, and
+device-cgroup restrictions still apply. Fix access through the host's normal
+GPU configuration rather than granting blanket privileges. Hotplugged or
+replaced device nodes may require a sandbox restart. Explicit `--with` mounts
+still take precedence and can hide or replace GPU-related mounts.
+
+### Security Notes
+
+> **Warning:** `--gpu` exposes all matching GPU nodes present at launch, subject
+> to host access controls. It adds access to GPU driver ioctls, shared GPU
+> resources, and potentially display/control interfaces—not just compute. Driver
+> vulnerabilities, resource exhaustion, and host display interference are risks.
+> Read-only `/sys` also exposes non-GPU host hardware/kernel information. There
+> is no GPU memory quota, per-device selection, or cross-session isolation.
+
+The local namespace, capability, and seccomp settings are unchanged; the seccomp
+filter does not broadly block GPU ioctls. GPU visibility environment variables
+are not security boundaries. This switch does not forward X11/Wayland sockets
+or otherwise provide desktop-session access. Without `--gpu`, no GPU-specific
+mounts or probes are added.
+
 ## SSH Agent and Git Signing
 
 If `SSH_AUTH_SOCK` points to a valid socket, `opencodebox` forwards that socket into the sandbox. This allows SSH commit signing with keys already loaded by `ssh-add` on the host. This feature does not mount private SSH keys into the sandbox.
@@ -204,7 +295,7 @@ bash tests/seccomp.sh          # seccomp integration (real bwrap + prebuilt .bpf
 ```
 
 Launcher tests are black-box: `bwrap` is mocked, the argv it would receive is
-asserted. GPU tests (future) plug into `tests/conftest.py` the same way.
+asserted. GPU tests (`tests/test_gpu.py`) use the same `tests/conftest.py` harness.
 
 ### Seccomp BPF filter
 

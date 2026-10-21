@@ -63,11 +63,13 @@ else:
         )
         path.chmod(0o755)
 
-    def run_launcher(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    def run_launcher(self, *args: str, cwd: Path | None = None,
+                     script: Path | None = None) -> subprocess.CompletedProcess:
+        """Run the launcher (or an adapted copy of it) as a black box."""
         self.capture.unlink(missing_ok=True)
         self.calls.unlink(missing_ok=True)
         result = subprocess.run(
-            [str(self.bin / "bash"), str(LAUNCHER), *args],
+            [str(self.bin / "bash"), str(script if script is not None else LAUNCHER), *args],
             cwd=str(cwd or self.project),
             env=self.env,
             capture_output=True,
