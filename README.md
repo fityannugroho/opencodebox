@@ -9,6 +9,7 @@ Run OpenCode inside a bubblewrap sandbox for security isolation.
 - **Process Isolation**: Uses unshare PID, IPC, and UTS namespaces
 - **Controlled Filesystem**: Most system filesystem mounted read-only
 - **Custom Bind Mounts**: Add read-write or read-only access with `--with` and `--with-ro`
+- **Device Access (Opt-In)**: Expose host device nodes with their host mode using `--device`
 - **Mise Support**: Integrated with [mise](https://mise.jdx.dev) for tool management
 - **SSH Agent Forwarding**: Supports SSH commit signing through the host `ssh-agent`
 - **Seccomp Sandbox Filter**: Mitigates kernel privilege escalation vulnerabilities (see [details](#seccomp-sandbox-filter))
@@ -50,6 +51,7 @@ opencodebox [OPTIONS] [OPENCODE_ARGS...]
 
 - `--with /host[:/sandbox]` - Bind host path read-write to sandbox
 - `--with-ro /host[:/sandbox]` - Bind host path read-only to sandbox
+- `--device /dev/NAME` - Expose one host device node with its host mode; repeat for more nodes; see [device access](#device-access-opt-in)
 
 These options allow you to specify additional directories to mount inside the sandbox for read-write or read-only access.
 
@@ -68,13 +70,16 @@ opencodebox --with /mnt/data:/workspace/data
 # Run sandboxed opencode with read-only access to config
 opencodebox --with-ro /etc/hosts
 
+# Run sandboxed opencode with direct access to a serial port and a webcam
+opencodebox --device /dev/ttyUSB0 --device /dev/video0
+
 # Run sandboxed opencode server with specified bind mounts
 opencodebox --with /data --with-ro /config serve
 ```
 
 ## How It Works
 
-1. Parse arguments (`--with`, `--with-ro`, `--version`, `--help`)
+1. Parse arguments (`--with`, `--with-ro`, `--device`, `--version`, `--help`)
 2. Check prerequisites (bwrap and opencode)
 3. Load seccomp sandbox filter (see [details](#seccomp-sandbox-filter))
 4. **Enforce security restrictions**:
@@ -98,6 +103,7 @@ opencodebox --with /data --with-ro /config serve
 - `/etc/ca-certificates` - CA certificate store (if present)
 - `/etc/pki/ca-trust`, `/etc/pki/tls/certs` - Fedora/RHEL trust store and certificate targets for `/etc/ssl` symlinks (if present); `/etc/pki/tls/private` is not mounted
 - `/etc/alternatives` - System alternatives (managed by update-alternatives)
+- `/etc/passwd`, `/etc/group` - Synthetic identity: your user plus `root`, `nobody`, and every group you belong to on the host, so group and owner lookups (`getent`, initgroups) resolve inside the sandbox; ids not mapped into the sandbox's user namespace (any other host user) still display as `65534`/`nobody`; no system credential files are exposed
 - `$HOME/.local` - User local data (except keyrings/tool data)
 - `$HOME/.cache/opencode` - OpenCode cache
 - `$HOME/.ssh/*.pub` - Sanitized OpenSSH public key material, when `$HOME/.ssh` is not a symlink
@@ -147,8 +153,144 @@ Each tool is mounted only when `command -v <tool>` succeeds on the host. If the 
 
 - **Project directory**: Cannot run from `$HOME`, `~/.ssh`, `~/.gnupg`, or their ancestors. Use a dedicated project directory.
 - **Bind mounts**: `--with` and `--with-ro` reject paths that point to or enclose sensitive locations (`$HOME`, `~/.ssh`, `~/.gnupg`).
+- **Device binds**: `--device` accepts only existing character or block device nodes under `/dev`; symlinks, symlinked parent directories, and unsafe path components are rejected.
 - **State directory**: `~/.local/state/opencode` is mounted read-write so that locks and TUI state stay shared between the sandbox and the host. The launcher masks the host background-service registration inside the sandbox, but a sandboxed process can still create files in that directory, and the host client reads some of them (including the pty runtime registration). Treat that directory as shared state, not as a trust boundary.
 - **SSH directory**: `~/.ssh` must have permissions `0700`. Fix with: `chmod 700 ~/.ssh`
+
+## Device Access (Opt-In)
+
+`--device /dev/NAME` exposes an individual host device node to programs running
+**directly inside opencodebox**. Repeat the switch for multiple nodes:
+
+```bash
+opencodebox --device /dev/ttyUSB0
+opencodebox --device /dev/video0 --device /dev/snd/controlC0
+# Combine with other options:
+opencodebox --device /dev/ttyUSB0 -s SESSION_ID
+```
+
+When testing a checkout, use `./opencodebox` rather than an older installed
+copy, and launch from your normal host environment. No mounts are added to an
+already running session.
+
+### Same mode as on the host
+
+Each node is bound with bubblewrap's `--dev-bind` at the **same path** inside
+the sandbox's private `/dev`. The bind shares the host inode, so the device
+keeps **the same mode (permission bits), owner, group, and ACLs as on the
+host** — opencodebox never recreates device nodes, changes device permissions,
+or grants access the host denies. Verify inside the sandbox:
+
+```bash
+ls -l /dev/ttyUSB0        # same type, mode, and device numbers
+test -r /dev/ttyUSB0 && echo readable   # access matches the host user
+test -w /dev/ttyUSB0 && echo writable
+```
+
+Owner and group **names** may render as `nobody` — see
+[When a bound device cannot be opened](#when-a-bound-device-cannot-be-opened)
+for why that display artifact is harmless.
+
+If your user cannot open the device on the host, fix that through the host's
+normal configuration (udev rules, group membership) and relaunch; the sandbox
+only inherits host device access.
+
+### When a bound device cannot be opened
+
+The bind shares the host inode, and the sandbox keeps your uid, gid, and
+supplementary group membership, so an `open()` inside the sandbox is
+authorized exactly like on the host: same mode bits, owner, group, POSIX
+ACLs, SELinux label, and device-cgroup rules. If a program inside cannot
+open the node, your user could not open it on the host either. Check without
+`sudo` and without opening or powering up the device:
+
+```bash
+test -r /dev/ttyUSB0 && echo readable
+test -w /dev/ttyUSB0 && echo writable
+```
+
+On servers and over SSH — typical RHEL 9 setups — there is no graphical
+login, so systemd-logind grants no per-seat ACLs and device access comes
+from group membership:
+
+| Node | Typical group |
+|---|---|
+| `/dev/ttyUSB*`, `/dev/ttyACM*` | `dialout` |
+| `/dev/video*` | `video` |
+| `/dev/snd/*` | `audio` |
+
+Fix it host-side, then start a new session (reconnect SSH or log out and
+back in) so the new group applies, and relaunch:
+
+```bash
+sudo usermod -aG dialout "$USER"
+```
+
+At launch, opencodebox prints a warning when a requested node's mode bits
+deny your user both read and write (for example `root:dialout 0660` while you
+are not in `dialout`). Nodes with POSIX ACLs are skipped because their mode
+bits do not describe their access; the bind still happens either way.
+
+#### Why `id` and `ls` look wrong inside the sandbox
+
+bubblewrap always runs the sandbox in a user namespace that maps only your
+own uid and gid. Any *other* id on a bound inode — for example
+`root:dialout` on `/dev/ttyACM0` — is unmapped inside, so the kernel reports
+it as the overflow id `65534`, which renders as `nobody`:
+
+```console
+$ ls -l /dev/ttyACM0            # host shows: root dialout
+crw-rw----. 1 nobody nobody 166, 0 Oct  7 04:25 /dev/ttyACM0
+```
+
+This is a display artifact, not a change of ownership or access:
+
+- The inode is still the host's `root:dialout` node with unchanged mode
+  bits, device numbers, ACLs, and SELinux label — and the kernel still
+  authorizes `open()` with your real host uid and group membership.
+- No process inside the sandbox can *become* those unmapped ids, so the
+  artifact never widens access.
+- Inside the sandbox, `id` likewise prints your supplementary groups as
+  `nobody`/`65534`. Do not diagnose device access with `id` or `ls` inside
+  the sandbox; use `test -r`/`test -w` or the actual device operation.
+
+opencodebox writes your host groups into the sandbox's `/etc/group` (plus
+`root` and `nobody` entries) so lookups by number or name — `getent group
+dialout`, initgroups-style membership checks — resolve normally; the
+`nobody` rendering of unmapped ids is expected and harmless.
+
+> **Note:** Upgrading bubblewrap does not change device-access semantics.
+> RHEL 9 ships bubblewrap 0.4.1 originally, rebased to 0.6.3 in 2024
+> (`dnf update` does not go further). Every option opencodebox uses —
+> including `--seccomp` and `--dev-bind` — exists in 0.4.1, and
+> `--dev-bind` behaves the same across versions: the node is exposed with
+> its host mode, and host permissions decide whether it can be opened.
+
+### Validation and behavior
+
+- Only absolute paths under `/dev` are accepted, and the node must already
+  exist. Validation failure aborts the launch.
+- The node must be a **character or block device** (checked with
+  `stat -c '%F'`). Regular files, directories, FIFOs, and symlinks are
+  rejected; resolve symlinks such as `/dev/serial/by-id/...` yourself and pass
+  the real node (usually `/dev/ttyUSB0`). Symlinked parent directories and
+  paths with empty, `.`, or `..` components are also refused.
+- Parent directories (for example `/dev/snd`) are created inside the sandbox
+  before the node is bound; repeating an identical `--device` binds it once.
+- Before binding, the launcher warns when the node's mode bits deny your
+  user both read and write on the host (POSIX-ACL nodes are skipped);
+  the bind still happens.
+- The launcher never runs `sudo`, loads drivers, or changes device permissions.
+- Host udev, ACL, group, SELinux, and device-cgroup restrictions still apply.
+  Hotplugged or renumbered nodes need a sandbox restart. Explicit `--with`
+  mounts still take precedence and can hide or replace device mounts.
+
+> **Warning:** `--device` exposes everything the node allows on the host. For
+> block devices (`/dev/sda`) or privileged nodes (`/dev/mem`, `/dev/kvm`,
+> `/dev/net/tun`), that can mean raw storage, kernel, or virtualization access;
+> the node's host permissions are the only boundary. The local namespace,
+> capability, and seccomp settings are unchanged. Expose the narrowest node
+> you need.
 
 ## SSH Agent and Git Signing
 
@@ -204,7 +346,7 @@ bash tests/seccomp.sh          # seccomp integration (real bwrap + prebuilt .bpf
 ```
 
 Launcher tests are black-box: `bwrap` is mocked, the argv it would receive is
-asserted. GPU tests (future) plug into `tests/conftest.py` the same way.
+asserted. Device tests (`tests/test_device.py`) use the same `tests/conftest.py` harness.
 
 ### Seccomp BPF filter
 

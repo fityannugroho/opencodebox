@@ -28,12 +28,14 @@ class Launcher:
             directory.mkdir(parents=True)
         self.capture = root / "bwrap.json"
         self.calls = root / "calls.jsonl"
+        self.files = root / "files.json"
         self.env = {
             "HOME": str(self.home),
             "PATH": str(self.bin),
             "LC_ALL": "C",
             "CAPTURE": str(self.capture),
             "CALLS": str(self.calls),
+            "FILES": str(self.files),
         }
         for name in ("bash", "cat", "dirname", "uname", "id", "stat", "realpath", "mkdir",
                      "mktemp", "mv", "rm"):
@@ -41,7 +43,17 @@ class Launcher:
             assert target is not None, name
             (self.bin / name).symlink_to(target)
         self.command("bwrap", """
-Path(os.environ['CAPTURE']).write_text(json.dumps(sys.argv[1:]))
+args = sys.argv[1:]
+files = {}
+for i, arg in enumerate(args):
+    if arg == '--file' and i + 2 < len(args):
+        try:
+            files[args[i + 2]] = os.read(int(args[i + 1]), 65536).decode()
+        except (OSError, ValueError):
+            pass
+Path(os.environ['CAPTURE']).write_text(json.dumps(args))
+if files and os.environ.get('FILES'):
+    Path(os.environ['FILES']).write_text(json.dumps(files))
 """)
         self.command("opencode", """
 if sys.argv[1:] == ['--version']:
@@ -63,11 +75,14 @@ else:
         )
         path.chmod(0o755)
 
-    def run_launcher(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    def run_launcher(self, *args: str, cwd: Path | None = None,
+                     script: Path | None = None) -> subprocess.CompletedProcess:
+        """Run the launcher (or an adapted copy of it) as a black box."""
         self.capture.unlink(missing_ok=True)
         self.calls.unlink(missing_ok=True)
+        self.files.unlink(missing_ok=True)
         result = subprocess.run(
-            [str(self.bin / "bash"), str(LAUNCHER), *args],
+            [str(self.bin / "bash"), str(script if script is not None else LAUNCHER), *args],
             cwd=str(cwd or self.project),
             env=self.env,
             capture_output=True,
