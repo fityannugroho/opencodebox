@@ -27,6 +27,7 @@ Usage:
 Options:
   --with /host[:/sandbox]      Bind host path read-write (sandbox path defaults to host path)
   --with-ro /host[:/sandbox]   Bind host path read-only (sandbox path defaults to host path)
+  --device /dev/NAME          Expose a host device node with the same mode as on the host
   --version, -v                Show version information
   --help, -h                   Show this help message
 
@@ -42,6 +43,7 @@ Examples:
   opencodebox --with ../app-backend
   opencodebox --with /mnt/data:/workspace/data
   opencodebox --with-ro /etc/hosts
+  opencodebox --device /dev/ttyUSB0 --device /dev/video0
   opencodebox --with ~/another-project1 --with-ro ~/another-project2 serve
 EOF
     exit 0
@@ -163,10 +165,126 @@ sanitize_ssh_public_key_file() {
     esac
 }
 
+# BEGIN DEVICE MOUNTS
+# Internal root argument allows fixture testing without real device nodes.
+# The launcher always calls this with the host's /dev. --dev-bind shares the
+# host inode, so the bound node keeps its host mode, owner, group, and ACLs:
+# device access inside the sandbox matches the host.
+
+# Advisory only: the sandbox inherits host device access exactly (same inode,
+# same uid/gid and supplementary groups), so a node whose mode bits deny the
+# invoking user both read and write cannot be opened inside either. Warn with
+# the usual host-side fix instead of failing silently at open() time. Nodes
+# with POSIX ACLs (stat '%A' ends in '+') are skipped: their access is not
+# described by the mode bits. The node is never opened. Launcher identity
+# variables are required; when absent (extracted helper tests) this is skipped.
+warn_if_device_inaccessible() {
+    local path="$1" mode node_uid node_gid perms mode_bits class group_label
+    [[ -n "${USER_ID:-}" && -n "${USER_NAME:-}" ]] || return 0
+
+    read -r mode node_uid node_gid perms \
+        < <(LC_ALL=C stat -c '%a %u %g %A' "$path" 2>/dev/null) || return 0
+    # stat %a prints octal without leading zeros ("0" for mode 000).
+    [[ "$mode" =~ ^[0-7]{1,4}$ ]] || return 0
+    # POSIX ACLs may grant access beyond the mode bits.
+    [[ "$perms" != *"+"* ]] || return 0
+
+    # Permission class that applies to the invoking user.
+    mode_bits=$(( 8#$mode & 8#777 ))
+    if [[ "$node_uid" == "$USER_ID" ]]; then
+        class=$(( (mode_bits >> 6) & 7 ))
+    elif [[ " ${USER_GROUPS:-} " == *" $node_gid "* ]]; then
+        class=$(( (mode_bits >> 3) & 7 ))
+    else
+        class=$(( mode_bits & 7 ))
+    fi
+    # Warn only when neither read (4) nor write (2) is possible.
+    [[ $(( class & 6 )) -eq 0 ]] || return 0
+
+    if [[ "$node_uid" == "$USER_ID" ]]; then
+        echo "Warning: --device '$path' is owned by user '$USER_NAME' but its mode ($mode) grants no read or write. Programs inside the sandbox inherit host access and cannot open it. Fix the node's permissions on the host (for example with a udev rule) and relaunch." >&2
+        return 0
+    fi
+
+    group_line=""
+    read -r group_line < <(getent group "$node_gid" 2>/dev/null)
+    group_label="${group_line%%:*}"
+    [[ -n "$group_label" ]] || group_label="$node_gid"
+    echo "Warning: --device '$path' is owned by uid $node_uid, group $group_label (mode $mode) and user '$USER_NAME' has no read or write access to it on the host. Programs inside the sandbox inherit host access and cannot open it. Fix host access on the host (e.g. 'sudo usermod -aG $group_label $USER_NAME', then log out and back in) and relaunch." >&2
+}
+
+configure_device_mounts() {
+    local dev_root="${1:-/dev}"
+    shift
+    local path relative component sub kind
+    local -a mounts=() components=()
+    local -A seen_paths=()
+    local -A seen_dirs=()
+
+    for path in "$@"; do
+        # Devices live under the host /dev; bind them at the same sandbox path.
+        if [[ "$path" != "$dev_root"/* ]]; then
+            echo "Error: --device requires an absolute path under $dev_root (got '$path')." >&2
+            return 1
+        fi
+        relative="${path#"$dev_root"/}"
+        [[ -z "${seen_paths[$relative]:-}" ]] || continue
+
+        # Refuse empty, '.', '..', and '//' path components.
+        IFS='/' read -ra components <<< "$relative"
+        for component in "${components[@]}"; do
+            if [[ -z "$component" || "$component" == "." || "$component" == ".." ]]; then
+                echo "Error: --device refuses unsafe path '$path'." >&2
+                return 1
+            fi
+        done
+
+        # stat without -L does not follow symlinks. Fix locale for its type text.
+        if [[ -L "$path" ]]; then
+            echo "Error: --device refuses symlink '$path'; pass the resolved device node instead." >&2
+            return 1
+        fi
+        kind="$(LC_ALL=C stat -c '%F' "$path" 2>/dev/null)" || kind=""
+        if [[ "$kind" != "character special file" && "$kind" != "block special file" ]]; then
+            echo "Error: --device '$path' is not a character or block device node (stat reports: '${kind:-inaccessible}')." >&2
+            return 1
+        fi
+        seen_paths[$relative]=1
+
+        # Advisory only: the bind below still happens.
+        warn_if_device_inaccessible "$path"
+
+        # bwrap --dir does not auto-create parents; add each ancestor under /dev.
+        if [[ ${#components[@]} -gt 1 ]]; then
+            sub=""
+            for component in "${components[@]:0:${#components[@]}-1}"; do
+                sub+="/$component"
+                if [[ -z "${seen_dirs[$sub]:-}" ]]; then
+                    if [[ -L "$dev_root/$sub" ]]; then
+                        echo "Error: --device refuses symlinked device directory '$dev_root/$sub'." >&2
+                        return 1
+                    fi
+                    seen_dirs[$sub]=1
+                    mounts+=(--dir "/dev$sub")
+                fi
+            done
+        fi
+        mounts+=(--dev-bind "$path" "/dev/$relative")
+    done
+
+    if [[ ${#mounts[@]} -eq 0 ]]; then
+        return 0
+    fi
+    BWRAP_ARGS+=("${mounts[@]}")
+    echo "Warning: --device exposes host device nodes to the sandbox; each node keeps its host mode and permissions." >&2
+}
+# END DEVICE MOUNTS
+
 # Parse --with and --with-ro arguments
 # These allow users to bind additional paths into the sandbox
 declare -a EXTRA_BINDS=()
 declare -a REMAINING_ARGS=()
+declare -a DEVICE_PATHS=()
 
 add_readonly_regular_file() {
     local file="$1"
@@ -253,6 +371,23 @@ while [[ $# -gt 0 ]]; do
             parse_bind_arg "--ro-bind" "$1"
             shift
             ;;
+        # --device: expose one host device node (repeat for multiple nodes)
+        --device)
+            shift
+            if [[ $# -eq 0 ]]; then
+                echo "Error: --device requires a value" >&2
+                echo "Usage: opencodebox --device /dev/ttyUSB0" >&2
+                exit 1
+            fi
+            # Device paths are absolute under /dev, so a dash can only be a typo.
+            if [[ "$1" == -* ]]; then
+                echo "Error: --device requires a device path, not another option (got '$1')." >&2
+                echo "Usage: opencodebox --device /dev/ttyUSB0" >&2
+                exit 1
+            fi
+            DEVICE_PATHS+=("$1")
+            shift
+            ;;
         # Pass through all other args to opencode
         *)
             REMAINING_ARGS+=("$1")
@@ -305,8 +440,30 @@ USER_ID="$(id -u)"
 GROUP_ID="$(id -g)"
 USER_NAME="$(id -un)"
 GROUP_NAME="$(id -gn)"
-exec {PASSWD_FD}< <(printf '%s:x:%s:%s:%s:%s:/bin/bash\n' "$USER_NAME" "$USER_ID" "$GROUP_ID" "$USER_NAME" "$HOME")
-exec {GROUP_FD}< <(printf '%s:x:%s:\n' "$GROUP_NAME" "$GROUP_ID")
+# All group IDs the user belongs to (primary first). bwrap's user namespace
+# maps only the user's own uid/gid, so `id` inside the sandbox prints
+# supplementary groups as 65534 even though the kernel still enforces the
+# real host groups on every bound inode (devices included). Writing the host
+# groups into /etc/group keeps name-based lookups (getent, ls -l,
+# initgroups) consistent inside the sandbox.
+USER_GROUPS="$(id -G 2>/dev/null)"
+GROUP_ENTRIES=""
+for group_id in $USER_GROUPS; do
+    group_line=""
+    read -r group_line < <(getent group "$group_id" 2>/dev/null)
+    group_name="${group_line%%:*}"
+    [[ -n "$group_name" ]] || group_name="$group_id"
+    GROUP_ENTRIES+="$(printf '%s:x:%s:%s' "$group_name" "$group_id" "$USER_NAME")"$'\n'
+done
+# Fallback to the primary group only (pre-existing behavior).
+[[ -n "$GROUP_ENTRIES" ]] || GROUP_ENTRIES="$(printf '%s:x:%s:' "$GROUP_NAME" "$GROUP_ID")"$'\n'
+# 'root' and 'nobody' (the kernel overflow id, 65534) resolve for name
+# lookups. Ids that are not mapped into the sandbox's user namespace — for
+# example root/dialout on a bound device node — always render as
+# 65534/'nobody' inside; that display artifact does not change access.
+exec {PASSWD_FD}< <(printf 'root:x:0:0:root:/root:/sbin/nologin\nnobody:x:65534:65534:Kernel Overflow User:/:/sbin/nologin\n%s:x:%s:%s:%s:%s:/bin/bash\n' \
+    "$USER_NAME" "$USER_ID" "$GROUP_ID" "$USER_NAME" "$HOME")
+exec {GROUP_FD}< <(printf 'root:x:0:\nnobody:x:65534:\n%s' "$GROUP_ENTRIES")
 
 # Restore remaining args for opencode
 set -- "${REMAINING_ARGS[@]}"
@@ -512,6 +669,12 @@ declare -a BWRAP_ARGS=(
     # --- OpenCode Binary ---
     "$OPCODE_BIND_FLAG" "$OPCODE_ROOT" /opt/opencode
 )
+
+# Explicitly requested device nodes follow the private /dev; explicit user
+# binds and the isolation overlay are appended later and still override them.
+if [[ ${#DEVICE_PATHS[@]} -gt 0 ]]; then
+    configure_device_mounts /dev "${DEVICE_PATHS[@]}" || exit 1
+fi
 
 # Private keyring (unmount if present)
 [[ -d "$HOME/.local/share/keyrings" ]] && BWRAP_ARGS+=(--tmpfs "$HOME/.local/share/keyrings")
